@@ -40,7 +40,7 @@
   <script>
 (() => {
   'use strict';
-  const canvas=document.querySelector('canvas');
+  let canvas=document.querySelector('canvas');
   const reduced=matchMedia('(prefers-reduced-motion: reduce)');
   const config={quality:1};
   const vertSource="\nattribute vec2 aPosition;\nvoid main() { gl_Position=vec4(aPosition,0.0,1.0); }\n";
@@ -55,7 +55,14 @@
   }
 
   function alternate() {
-    const ctx=canvas.getContext('2d',{alpha:false});
+    let ctx=canvas.getContext('2d',{alpha:false});
+    if(!ctx) {
+      const replacement=document.createElement('canvas');
+      replacement.setAttribute('aria-hidden','true');
+      canvas.replaceWith(replacement);
+      canvas=replacement;
+      ctx=canvas.getContext('2d',{alpha:false});
+    }
     if(!ctx) return () => {};
     let width=0,height=0;
     function resize() {
