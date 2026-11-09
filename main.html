@@ -7,136 +7,311 @@
   <meta name="color-scheme" content="dark">
   <title>Free</title>
   <style>
+    :root { color-scheme: dark; background: #101010; }
     *, *::before, *::after { box-sizing: border-box; }
     html, body { width: 100%; min-height: 100%; margin: 0; background: #101010; }
-    body { overflow: hidden; }
-    main {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 100%;
-      min-height: 100vh;
-      min-height: 100svh;
-      overflow: hidden;
-      background: #101010;
-    }
-    .art {
-      display: block;
-      width: 100%;
-      height: 100vh;
-      height: 100svh;
-      flex-shrink: 0;
-      overflow: visible;
-    }
-    .wordmark {
-      animation: appear 1.15s cubic-bezier(.22, 1, .36, 1) both;
-      transform-box: fill-box;
-      transform-origin: center;
-    }
-    .ribbon--first { animation: drift-left 22s ease-in-out infinite alternate; }
-    .ribbon--second { animation: drift-right 20s ease-in-out infinite alternate; }
-    .ribbon--third { animation: drift-bottom 24s ease-in-out infinite alternate; }
-    @keyframes appear {
-      from { opacity: 0; transform: translateY(12px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    @keyframes drift-left {
-      from { transform: translate(0, 0); }
-      to { transform: translate(-4px, 3px); }
-    }
-    @keyframes drift-right {
-      from { transform: translate(0, 0); }
-      to { transform: translate(3px, -3px); }
-    }
-    @keyframes drift-bottom {
-      from { transform: translate(0, 0); }
-      to { transform: translate(0, 5px); }
-    }
-    @media (max-aspect-ratio: 1/1) {
-      .art { width: 165%; height: auto; }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .wordmark, .ribbon { animation: none; }
-    }
+    body { overflow: hidden; font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .scene { position: fixed; inset: 0; overflow: hidden; background: #101010; isolation: isolate; }
+    canvas { position: absolute; display: block; inset: 0; width: 100%; height: 100%; }
+    .veil { position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg, rgba(0,0,0,.10), transparent 35%, transparent 73%, rgba(0,0,0,.18)); }
+    .identity { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; user-select: none; }
+    .identity span { display: block; margin-top: .09em; padding-right: .09em; color: #f47761; font-size: clamp(90px, 15.5vw, 220px); font-weight: 780; line-height: 1; letter-spacing: -.09em; opacity: 0; filter: blur(16px); transform: translateY(28px) scale(.95); animation: resolve 1.8s cubic-bezier(.16, 1, .3, 1) 3.7s forwards; text-shadow: 0 0 72px rgba(244,119,97,.09); }
+    @keyframes resolve { to { opacity: 1; filter: blur(0); transform: translateY(0) scale(1); } }
+    @media (prefers-reduced-motion: reduce) { .identity span { animation: none; opacity: 1; filter: none; transform: none; } }
   </style>
 </head>
 <body>
-  <main><svg class="art" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1672 941" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Free">
-  <defs>
-    <radialGradient id="hazeL" cx="0" cy="0" r="1" gradientTransform="translate(65 85) rotate(17) scale(1050 680)" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#512520" stop-opacity=".74"/>
-      <stop offset=".42" stop-color="#36201d" stop-opacity=".4"/>
-      <stop offset="1" stop-color="#101010" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="hazeR" cx="0" cy="0" r="1" gradientTransform="translate(1480 866) rotate(-20) scale(920 570)" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#54251f" stop-opacity=".64"/>
-      <stop offset=".47" stop-color="#301a19" stop-opacity=".38"/>
-      <stop offset="1" stop-color="#101010" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="ribbonA" x1="90" y1="22" x2="527" y2="400" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#46231f"/>
-      <stop offset=".57" stop-color="#291a1a"/>
-      <stop offset="1" stop-color="#171313"/>
-    </linearGradient>
-    <linearGradient id="ribbonB" x1="1458" y1="0" x2="1591" y2="330" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#673029"/>
-      <stop offset=".6" stop-color="#34201d"/>
-      <stop offset="1" stop-color="#171213"/>
-    </linearGradient>
-    <linearGradient id="ribbonC" x1="1460" y1="693" x2="1130" y2="960" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#4a241e"/>
-      <stop offset=".6" stop-color="#311d1b"/>
-      <stop offset="1" stop-color="#1b1515"/>
-    </linearGradient>
-    <linearGradient id="rimA" x1="0" y1="415" x2="820" y2="0" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#fa826a" stop-opacity=".57"/>
-      <stop offset=".46" stop-color="#f47761" stop-opacity=".6"/>
-      <stop offset="1" stop-color="#ee7965" stop-opacity=".09"/>
-    </linearGradient>
-    <linearGradient id="rimB" x1="1338" y1="0" x2="1672" y2="327" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#ff826b" stop-opacity=".98"/>
-      <stop offset=".56" stop-color="#f47761" stop-opacity=".83"/>
-      <stop offset="1" stop-color="#d45d50" stop-opacity=".42"/>
-    </linearGradient>
-    <linearGradient id="rimC" x1="645" y1="941" x2="1672" y2="691" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#e06554" stop-opacity=".08"/>
-      <stop offset=".56" stop-color="#f47761" stop-opacity=".63"/>
-      <stop offset="1" stop-color="#fa856c" stop-opacity=".83"/>
-    </linearGradient>
-    <linearGradient id="coral" x1="414" y1="350" x2="1240" y2="584" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#ff7963"/>
-      <stop offset=".58" stop-color="#fb7660"/>
-      <stop offset="1" stop-color="#f47761"/>
-    </linearGradient>
-    <filter id="rimGlow" x="-35%" y="-35%" width="170%" height="170%" color-interpolation-filters="sRGB">
-      <feGaussianBlur stdDeviation="14"/>
-    </filter>
-  </defs>
-  <rect width="1672" height="941" fill="#101010"/>
-  <rect width="1672" height="941" fill="url(#hazeL)"/>
-  <rect width="1672" height="941" fill="url(#hazeR)"/>
-  <g class="ribbon ribbon--first">
-    <path d="M0 0H818C665 143 536 213 369 260C199 310 79 365 0 416Z" fill="url(#ribbonA)"/>
-    <path d="M0 416C79 365 199 310 369 260C536 213 665 143 818 0" stroke="url(#rimA)" fill="none" stroke-width="9" filter="url(#rimGlow)" opacity=".42"/>
-    <path d="M0 416C79 365 199 310 369 260C536 213 665 143 818 0" stroke="url(#rimA)" fill="none" stroke-width="1.7"/>
-  </g>
-  <g class="ribbon ribbon--second">
-    <path d="M1338 0H1672V327C1531 293 1409 180 1363 93C1347 62 1340 26 1338 0Z" fill="url(#ribbonB)"/>
-    <path d="M1338 0C1340 26 1347 62 1363 93C1409 180 1531 293 1672 327" stroke="url(#rimB)" fill="none" stroke-width="12" filter="url(#rimGlow)" opacity=".46"/>
-    <path d="M1338 0C1340 26 1347 62 1363 93C1409 180 1531 293 1672 327" stroke="url(#rimB)" fill="none" stroke-width="1.8"/>
-  </g>
-  <g class="ribbon ribbon--third">
-    <path d="M645 941C844 866 1013 783 1197 737C1353 697 1523 688 1672 691V941Z" fill="url(#ribbonC)"/>
-    <path d="M645 941C844 866 1013 783 1197 737C1353 697 1523 688 1672 691" stroke="url(#rimC)" fill="none" stroke-width="14" filter="url(#rimGlow)" opacity=".45"/>
-    <path d="M645 941C844 866 1013 783 1197 737C1353 697 1523 688 1672 691" stroke="url(#rimC)" fill="none" stroke-width="1.8"/>
-  </g>
-  <g class="wordmark" fill="url(#coral)" fill-rule="evenodd">
-    <path d="M415 432C416 389 429 352 456 336C470 327 485 325 504 325H684C676 363 659 392 621 395H507C469 395 440 410 415 432Z"/>
-    <path d="M413 488C413 454 438 428 478 428H628C620 464 596 496 562 498H486V593H413Z"/>
-    <path d="M640 593V485C640 432 674 393 728 393H786V450H748C719 450 705 471 705 499V593Z"/>
-    <path d="M904 388C965 388 1011 434 1011 491V504H855C859 530 879 548 905 548C924 548 938 539 947 523L1006 528C992 573 954 602 905 602C841 602 793 555 793 495C793 435 841 388 904 388Z M854 470H951C943 448 925 434 904 434C882 434 864 448 854 470Z"/>
-    <path d="M1133 388C1196 388 1240 434 1240 491V504H1084C1088 530 1108 548 1134 548C1153 548 1167 539 1177 523L1235 528C1221 572 1184 602 1134 602C1070 602 1022 555 1022 495C1022 435 1071 388 1133 388Z M1083 470H1180C1172 448 1155 434 1133 434C1110 434 1093 449 1083 470Z"/>
-  </g>
-</svg></main>
+  <main class="scene" aria-label="Free">
+    <canvas id="surface" aria-hidden="true"></canvas>
+    <div class="veil" aria-hidden="true"></div>
+    <div class="identity" aria-hidden="true"><span>Free</span></div>
+  </main>
+  <script>
+    (() => {
+      'use strict';
+      const canvas = document.getElementById('surface');
+      const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+      function drawAlternate() {
+        const surface = document.createElement('canvas');
+        surface.setAttribute('aria-hidden', 'true');
+        canvas.replaceWith(surface);
+        const ctx = surface.getContext('2d', {alpha: false});
+        if (!ctx) return;
+        let w = 0, h = 0;
+        function resizeAlternative() {
+          const dpr = Math.min(devicePixelRatio || 1, 1.35);
+          const nw = Math.max(1, Math.round(innerWidth*dpr));
+          const nh = Math.max(1, Math.round(innerHeight*dpr));
+          if (nw===w && nh===h) return;
+          w=surface.width=nw; h=surface.height=nh;
+        }
+        const startAt=performance.now();
+        function point(a,k,t) {
+          let angle=a+t*(.22+k*.04);
+          const open=Math.min(1,Math.max(0,(t-2.55)/3.2));
+          const smooth=open*open*(3-2*open);
+          const rx=(.41+ k*.035)*(1+smooth*.69), ry=(.25+k*.055)*(1+smooth*.66);
+          let x=Math.cos(angle)*rx;
+          let y=Math.sin(angle)*ry;
+          let z=Math.sin(2*angle+k*2.1+t*.38)*.19;
+          const turn=k*1.12+t*.075;
+          let xp=x*Math.cos(turn)-z*Math.sin(turn);
+          let zp=x*Math.sin(turn)+z*Math.cos(turn);
+          let yp=y*Math.cos(.6+k*.27)-zp*Math.sin(.6+k*.27);
+          const perspective=1+zp*.35;
+          return [w*.5+xp*w*.91*perspective,h*.5+yp*h*1.07*perspective];
+        }
+        function animate(now){
+          resizeAlternative();
+          const t=reducedMotion.matches ? 5.5 : (now-startAt)*.001;
+          const base=ctx.createRadialGradient(w*.23,h*.21,0,w*.5,h*.5,w*.86);
+          base.addColorStop(0,'#201718'); base.addColorStop(.5,'#111011'); base.addColorStop(1,'#101010');
+          ctx.fillStyle=base; ctx.fillRect(0,0,w,h);
+          for (const light of [[.1,.1,.6],[.85,.9,.55]]) {
+            const halo=ctx.createRadialGradient(w*light[0],h*light[1],0,w*light[0],h*light[1],w*light[2]);
+            halo.addColorStop(0,'rgba(244,119,97,.10)');halo.addColorStop(1,'rgba(244,119,97,0)');
+            ctx.fillStyle=halo;ctx.fillRect(0,0,w,h);
+          }
+          const reveal=Math.min(1,Math.max(0,(t-.12)/2.4));
+          for(let k=2;k>=0;k--){
+            ctx.save();
+            ctx.globalAlpha=reveal;
+            ctx.beginPath();
+            for(let i=0;i<=180;i++){
+              const a=i/180*Math.PI*2, p=point(a,k,t);
+              if(i===0)ctx.moveTo(p[0],p[1]); else ctx.lineTo(p[0],p[1]);
+            }
+            ctx.closePath();
+            ctx.lineCap='round';ctx.lineJoin='round';
+            const thickness=Math.min(w,h)*(.063-k*.009);
+            ctx.shadowColor='rgba(240,84,65,.30)';ctx.shadowBlur=thickness*1.7;
+            ctx.lineWidth=thickness*1.35;ctx.strokeStyle='#3a1718';ctx.stroke();
+            ctx.shadowBlur=0;
+            const fill=ctx.createLinearGradient(0,h*.19,w,h*.8);
+            fill.addColorStop(0,'#f77b67');fill.addColorStop(.32,'#57211d');fill.addColorStop(.5,'#c64d41');fill.addColorStop(.76,'#27171a');fill.addColorStop(1,'#fa7c66');
+            ctx.lineWidth=thickness;ctx.strokeStyle=fill;ctx.stroke();
+            ctx.globalAlpha=reveal*.72;
+            ctx.lineWidth=Math.max(1,thickness*.115);
+            ctx.strokeStyle='rgba(255,190,157,.82)';
+            ctx.shadowColor='#f47761';ctx.shadowBlur=12;
+            ctx.stroke();
+            ctx.restore();
+          }
+          if(!reducedMotion.matches && !document.hidden) requestAnimationFrame(animate);
+        }
+        requestAnimationFrame(animate);
+        addEventListener('resize',resizeAlternative,{passive:true});
+        document.addEventListener('visibilitychange',()=>{if(!document.hidden)requestAnimationFrame(animate);});
+      }
+      const gl = canvas.getContext('webgl', { alpha: false, depth: false, stencil: false, antialias: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
+      if (!gl) { drawAlternate(); return; }
+
+      const vertexSource = `
+        attribute vec2 aPosition;
+        void main() { gl_Position = vec4(aPosition, 0.0, 1.0); }
+      `;
+
+      const fragmentSource = `
+        precision highp float;
+        uniform vec2 uResolution;
+        uniform float uTime;
+        #define PI 3.14159265359
+        mat2 rot(float a) { float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }
+        float smoothUnion(float a,float b,float k){ float h=clamp(.5+.5*(b-a)/k,0.,1.); return mix(b,a,h)-k*h*(1.-h); }
+        float ring(vec3 p, float a, float t, float radius, float width, float phase) {
+          p.xy *= rot(a);
+          p.yz *= rot(.35*sin(t*.23+phase));
+          float ang = atan(p.y,p.x);
+          float envelope = radius + .14*sin(ang*3. + t*.7 + phase) + .06*sin(ang*6.-t*.38+phase*2.);
+          float bend = .38*sin(ang*2. - t*.62 + phase) + .11*cos(ang*4.+t*.45);
+          float ripple = .022*sin(ang*13. - t*2. + phase);
+          float d = length(vec2(length(p.xy)-envelope,p.z-bend)) - width - ripple;
+          return d;
+        }
+        float ribbon(vec3 p,float t) {
+          float spin = t*.18;
+          p.xz *= rot(.28*sin(t*.2));
+          p.xy *= rot(.12*sin(t*.3));
+          float a = ring(p, spin, t, 1.27,.20, 0.);
+          float b = ring(p.yzx, -.57+spin*.7, t, 1.12,.16, 2.3);
+          float c = ring(p.zxy, .77-spin*.5, t, 1.02,.13, 4.2);
+          return smoothUnion(smoothUnion(a,b,.12),c,.09);
+        }
+        float scene(vec3 p,float time) {
+          float settle = smoothstep(0.,2.3,time);
+          float t = time*.7;
+          p.y += (1.-settle)*2.3;
+          p.x += (1.-settle)*.35;
+          float open = smoothstep(2.5,5.65,time);
+          p.xy *= mix(1.,.60,open);
+          float d = ribbon(p,t);
+          return d;
+        }
+        vec3 normalAt(vec3 p,float t) {
+          const float e=.002;
+          vec2 h=vec2(1.,-1.)*.5773;
+          return normalize(h.xyy*scene(p+h.xyy*e,t)+h.yyx*scene(p+h.yyx*e,t)+h.yxy*scene(p+h.yxy*e,t)+h.xxx*scene(p+h.xxx*e,t));
+        }
+        vec3 background(vec2 uv) {
+          float top = exp(-length((uv-vec2(-.75,.9))*vec2(1.15,.85))*1.45);
+          float bottom = exp(-length((uv-vec2(.9,-.9))*vec2(.9,1.3))*1.7);
+          vec3 col = vec3(.043,.041,.045);
+          col += vec3(.15,.039,.027)*top*.55;
+          col += vec3(.14,.037,.028)*bottom*.47;
+          col *= 1.-.15*smoothstep(.4,1.8,length(uv));
+          return col;
+        }
+        vec3 environment(vec3 direction,float time){
+          vec3 col=vec3(.055,.045,.046);
+          float softbox=pow(max(0.,dot(direction,normalize(vec3(-.42,.74,.50)))),18.);
+          float strip=pow(max(0.,dot(direction,normalize(vec3(.8,.2,.56)))),56.);
+          float edge=pow(max(0.,dot(direction,normalize(vec3(-.8,-.2,.55)))),28.);
+          float sweep=pow(max(0.,dot(direction,normalize(vec3(sin(time*.22),.83,cos(time*.22)))),40.);
+          col+=vec3(1.,.77,.66)*softbox*.9;
+          col+=vec3(1.,.40,.28)*strip*.78;
+          col+=vec3(.52,.21,.17)*edge*.5;
+          col+=vec3(1.,.63,.49)*sweep*.28;
+          return col;
+        }
+        vec3 shade(vec3 p,vec3 ray,vec3 normal,vec2 uv,float time){
+          vec3 view = -ray;
+          vec3 light=normalize(vec3(-.65,.87,1.1));
+          float ndl=max(dot(normal,light),0.);
+          float fresnel=pow(1.-max(dot(normal,view),0.),5.);
+          vec3 reflected=reflect(ray,normal);
+          vec3 refracted=refract(ray,normal,1./1.35);
+          vec3 backdrop=background(uv+normal.xy*.15);
+          float thickness=.58+.42*pow(max(0.,dot(normal,view)),.5);
+          vec3 absorb=vec3(.83,.32,.23)*thickness;
+          vec3 transmitted=mix(backdrop,absorb,.72);
+          vec3 env=environment(reflected,time);
+          vec3 halfV=normalize(light+view);
+          float spec=pow(max(dot(normal,halfV),0.),120.);
+          vec3 secondary=normalize(vec3(.8,-.46,.7));
+          float spec2=pow(max(dot(normal,normalize(secondary+view)),0.),72.);
+          float backLight=pow(max(dot(-normal,normalize(vec3(.27,-.6,-.75))),0.),1.4);
+          vec3 liquid=transmitted*(.58+ndl*.46);
+          liquid+=vec3(.48,.075,.048)*backLight*.33;
+          liquid+=env*(.24+fresnel*.88);
+          liquid+=vec3(1.,.84,.71)*spec*1.65;
+          liquid+=vec3(1.,.35,.24)*spec2*.72;
+          liquid+=vec3(.99,.36,.25)*fresnel*.45;
+          return liquid;
+        }
+        void main() {
+          vec2 uv=(gl_FragCoord.xy-.5*uResolution)/uResolution.y;
+          vec3 ro=vec3(0.,0.,4.75);
+          ro.xz*=rot(.09*sin(uTime*.18));
+          ro.y=.10*sin(uTime*.17);
+          vec3 target=vec3(0.,0.,0.);
+          vec3 forward=normalize(target-ro);
+          vec3 right=normalize(cross(forward,vec3(0.,1.,0.)));
+          vec3 up=cross(right,forward);
+          vec3 rd=normalize(forward*2.2+uv.x*right+uv.y*up);
+          vec3 color=background(uv);
+          float travel=0., closest=10.;
+          float hit=0.;
+          for(int i=0;i<82;i++) {
+            vec3 p=ro+rd*travel;
+            float d=scene(p,uTime);
+            closest=min(closest,d);
+            if(d<.0025){hit=1.;break;}
+            travel+=clamp(d*.75,.009,.28);
+            if(travel>10.)break;
+          }
+          if(hit>.5){
+            vec3 p=ro+rd*travel;
+            vec3 n=normalAt(p,uTime);
+            color=shade(p,rd,n,uv,uTime);
+            float softGlow=exp(-max(closest,0.)*4.5)*.04;
+            color+=vec3(.25,.05,.035)*softGlow;
+          } else {
+            float halo=exp(-max(closest,0.)*3.3)*.06;
+            color+=vec3(.48,.1,.06)*halo;
+          }
+          color=color/(1.+color);
+          color=pow(max(color,vec3(0.)),vec3(1./2.2));
+          float dither=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453)-.5;
+          color+=dither/255.;
+          gl_FragColor=vec4(color,1.);
+        }
+      `;
+
+      function compile(type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          console.error(gl.getShaderInfoLog(shader));
+          gl.deleteShader(shader);
+          return null;
+        }
+        return shader;
+      }
+      const vs = compile(gl.VERTEX_SHADER, vertexSource);
+      const fs = compile(gl.FRAGMENT_SHADER, fragmentSource);
+      if (!vs || !fs) { drawAlternate(); return; }
+      const program = gl.createProgram();
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error(gl.getProgramInfoLog(program));
+        drawAlternate();
+        return;
+      }
+      gl.useProgram(program);
+      const position = gl.getAttribLocation(program, 'aPosition');
+      const resolution = gl.getUniformLocation(program, 'uResolution');
+      const time = gl.getUniformLocation(program, 'uTime');
+      const buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]), gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(position);
+      gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+
+      let scale = Math.min(window.devicePixelRatio || 1, 1.15);
+      if ((navigator.hardwareConcurrency || 8) <= 4) scale = Math.min(scale, .85);
+      let width = 0, height = 0, frame = 0, sampleStart = 0;
+      let start = performance.now(), pausedAt = 0, elapsedPaused = 0;
+      function resize() {
+        const w = Math.max(1, Math.round(innerWidth * scale));
+        const h = Math.max(1, Math.round(innerHeight * scale));
+        if (w === width && h === height) return;
+        width = canvas.width = w;
+        height = canvas.height = h;
+        gl.viewport(0, 0, w, h);
+        gl.uniform2f(resolution, w, h);
+      }
+      function draw(now) {
+        if (document.hidden) { pausedAt = now; return; }
+        resize();
+        const seconds = reducedMotion.matches ? 5.5 : Math.max(0, (now-start-elapsedPaused)/1000);
+        gl.uniform1f(time, seconds);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        frame++;
+        if (!sampleStart) sampleStart = now;
+        if (frame >= 36) {
+          const fps = 36000 / Math.max(now-sampleStart, 1);
+          if (fps < 35 && scale > .52) scale = Math.max(.52,scale*.85);
+          else if (fps > 56 && scale < 1.12) scale = Math.min(1.12,scale*1.07);
+          frame = 0;
+          sampleStart = now;
+        }
+        if (!reducedMotion.matches) requestAnimationFrame(draw);
+      }
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+          if (pausedAt) elapsedPaused += performance.now()-pausedAt;
+          pausedAt = 0;
+          requestAnimationFrame(draw);
+        }
+      });
+      addEventListener('resize', resize, {passive: true});
+      requestAnimationFrame(draw);
+    })();
+  </script>
 </body>
 </html>
