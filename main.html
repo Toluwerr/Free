@@ -10,186 +10,125 @@
     :root {
       --background: #101010;
       --accent: #F47761;
-      --text: #F8F5F3;
       --ease: cubic-bezier(.22, 1, .36, 1);
     }
 
-    *, *::before, *::after { box-sizing: border-box; }
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
 
-    html {
+    html, body {
+      width: 100%;
       min-height: 100%;
+      margin: 0;
       background: var(--background);
     }
 
     body {
-      min-height: 100vh;
-      min-height: 100svh;
-      margin: 0;
       overflow: hidden;
-      background: var(--background);
-      color: var(--text);
-      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       -webkit-font-smoothing: antialiased;
     }
 
     .scene {
       position: relative;
       display: grid;
+      width: 100%;
       min-height: 100vh;
       min-height: 100svh;
       overflow: hidden;
-      place-items: center;
       isolation: isolate;
-      background:
-        radial-gradient(ellipse 60% 62% at 50% 56%, #191314 0%, transparent 75%),
-        var(--background);
+      place-items: center;
+      background: var(--background);
     }
 
-    .light {
-      position: absolute;
-      z-index: -2;
-      pointer-events: none;
-      border-radius: 50%;
-      filter: blur(68px);
-      opacity: .52;
-      animation: breathe 11s ease-in-out infinite alternate;
-    }
-
-    .light--top {
-      top: -38%;
-      left: -35%;
-      width: min(95vw, 1000px);
-      aspect-ratio: 1.25;
-      background: radial-gradient(ellipse, rgba(244, 119, 97, .25), transparent 66%);
-    }
-
-    .light--bottom {
-      right: -36%;
-      bottom: -52%;
-      width: min(105vw, 1100px);
-      aspect-ratio: 1.2;
-      background: radial-gradient(ellipse, rgba(244, 119, 97, .19), transparent 65%);
-      animation-delay: -5s;
-    }
-
-    .arc {
+    .glow {
       position: absolute;
       z-index: -1;
-      width: 105vmax;
-      height: 61vmax;
+      inset: -12%;
+      background: url("assets/free-banner.webp") center / cover no-repeat;
+      filter: blur(46px) brightness(.58);
+      opacity: .7;
+      transform: scale(1.09);
+      animation: breathe 16s ease-in-out infinite alternate;
       pointer-events: none;
-      border: 1px solid rgba(244, 119, 97, .18);
-      border-radius: 50%;
-      box-shadow: 0 0 90px rgba(244, 119, 97, .055);
-      animation: drift 16s ease-in-out infinite alternate;
     }
 
-    .arc--top {
-      top: -56vmax;
-      left: -42vmax;
-      transform: rotate(-17deg);
-    }
-
-    .arc--bottom {
-      right: -40vmax;
-      bottom: -52vmax;
-      transform: rotate(-13deg);
-      opacity: .82;
-      animation-delay: -6s;
-    }
-
-    .brand {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      margin-top: -1.2rem;
-      padding: 2rem;
-      animation: arrive 1.35s var(--ease) both;
-    }
-
-    .brand h1 {
-      margin: 0;
-      color: var(--accent);
-      font-size: clamp(5.5rem, 16vw, 11rem);
-      font-weight: 780;
-      line-height: 1;
-      letter-spacing: -.095em;
-      padding-right: .095em;
-      user-select: none;
-      text-shadow: 0 16px 64px rgba(244, 119, 97, .07);
-    }
-
-    .line {
-      width: clamp(72px, 11vw, 112px);
-      height: 2px;
-      margin-top: clamp(30px, 5vh, 52px);
-      overflow: hidden;
-      background: rgba(244, 119, 97, .16);
-      border-radius: 999px;
-      animation: appear .85s ease-out .65s both;
-    }
-
-    .line span {
+    .banner {
       display: block;
-      width: 45%;
-      height: 100%;
-      border-radius: inherit;
-      background: var(--accent);
-      animation: flow 2.5s cubic-bezier(.65, 0, .35, 1) 1s infinite;
+      width: 100%;
+      height: 100vh;
+      height: 100svh;
+      max-width: none;
+      object-fit: cover;
+      object-position: center;
+      user-select: none;
+      -webkit-user-drag: none;
+      pointer-events: none;
+      animation: reveal 1.5s var(--ease) both;
     }
 
-    @keyframes arrive {
-      from { opacity: 0; filter: blur(10px); transform: translateY(24px) scale(.97); }
-      to { opacity: 1; filter: blur(0); transform: translateY(0) scale(1); }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
     }
 
-    @keyframes appear {
-      from { opacity: 0; transform: scaleX(.5); }
-      to { opacity: 1; transform: scaleX(1); }
-    }
-
-    @keyframes flow {
-      0% { transform: translateX(-120%) scaleX(.65); opacity: .35; }
-      48% { transform: translateX(120%) scaleX(1.1); opacity: 1; }
-      100% { transform: translateX(320%) scaleX(.7); opacity: .35; }
+    @keyframes reveal {
+      from {
+        opacity: 0;
+        filter: blur(7px);
+        transform: scale(1.035);
+      }
+      to {
+        opacity: 1;
+        filter: blur(0);
+        transform: scale(1);
+      }
     }
 
     @keyframes breathe {
-      from { opacity: .36; transform: translate3d(-2%, 1%, 0) scale(.95); }
-      to { opacity: .62; transform: translate3d(2%, -2%, 0) scale(1.06); }
+      from {
+        opacity: .52;
+        transform: scale(1.09) translate3d(-.4%, 0, 0);
+      }
+      to {
+        opacity: .76;
+        transform: scale(1.14) translate3d(.4%, -.4%, 0);
+      }
     }
 
-    @keyframes drift {
-      from { translate: -1% 0; }
-      to { translate: 1% 1.5%; }
-    }
+    @media (max-aspect-ratio: 1/1) {
+      .banner {
+        width: 165%;
+        height: auto;
+        aspect-ratio: 16 / 9;
+        object-fit: contain;
+      }
 
-    @media (max-width: 600px) {
-      .arc--top { top: -34vmax; left: -74vmax; }
-      .arc--bottom { right: -74vmax; bottom: -35vmax; }
-      .light { filter: blur(44px); }
-      .brand { margin-top: -1rem; }
+      .glow {
+        filter: blur(65px) brightness(.38);
+        opacity: .7;
+      }
     }
 
     @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after {
-        animation-duration: .01ms !important;
-        animation-iteration-count: 1 !important;
+      .glow, .banner {
+        animation: none;
       }
     }
   </style>
 </head>
 <body>
-  <main class="scene" aria-label="Free">
-    <div class="light light--top" aria-hidden="true"></div>
-    <div class="light light--bottom" aria-hidden="true"></div>
-    <div class="arc arc--top" aria-hidden="true"></div>
-    <div class="arc arc--bottom" aria-hidden="true"></div>
-
-    <div class="brand">
-      <h1>Free</h1>
-      <div class="line" aria-hidden="true"><span></span></div>
-    </div>
+  <main class="scene">
+    <div class="glow" aria-hidden="true"></div>
+    <h1 class="sr-only">Free</h1>
+    <img class="banner" src="assets/free-banner.webp" alt="" draggable="false" fetchpriority="high">
   </main>
 </body>
 </html>
