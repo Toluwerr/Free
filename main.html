@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101010">
+  <meta name="color-scheme" content="dark">
+  <title>Free</title>
+  <style>
+    :root {
+      --background: #101010;
+      --accent: #F47761;
+      --text: #F8F5F3;
+      --ease: cubic-bezier(.22, 1, .36, 1);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html {
+      min-height: 100%;
+      background: var(--background);
+    }
+
+    body {
+      min-height: 100vh;
+      min-height: 100svh;
+      margin: 0;
+      overflow: hidden;
+      background: var(--background);
+      color: var(--text);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .scene {
+      position: relative;
+      display: grid;
+      min-height: 100vh;
+      min-height: 100svh;
+      overflow: hidden;
+      place-items: center;
+      isolation: isolate;
+      background:
+        radial-gradient(ellipse 60% 62% at 50% 56%, #191314 0%, transparent 75%),
+        var(--background);
+    }
+
+    .light {
+      position: absolute;
+      z-index: -2;
+      pointer-events: none;
+      border-radius: 50%;
+      filter: blur(68px);
+      opacity: .52;
+      animation: breathe 11s ease-in-out infinite alternate;
+    }
+
+    .light--top {
+      top: -38%;
+      left: -35%;
+      width: min(95vw, 1000px);
+      aspect-ratio: 1.25;
+      background: radial-gradient(ellipse, rgba(244, 119, 97, .25), transparent 66%);
+    }
+
+    .light--bottom {
+      right: -36%;
+      bottom: -52%;
+      width: min(105vw, 1100px);
+      aspect-ratio: 1.2;
+      background: radial-gradient(ellipse, rgba(244, 119, 97, .19), transparent 65%);
+      animation-delay: -5s;
+    }
+
+    .arc {
+      position: absolute;
+      z-index: -1;
+      width: 105vmax;
+      height: 61vmax;
+      pointer-events: none;
+      border: 1px solid rgba(244, 119, 97, .18);
+      border-radius: 50%;
+      box-shadow: 0 0 90px rgba(244, 119, 97, .055);
+      animation: drift 16s ease-in-out infinite alternate;
+    }
+
+    .arc--top {
+      top: -56vmax;
+      left: -42vmax;
+      transform: rotate(-17deg);
+    }
+
+    .arc--bottom {
+      right: -40vmax;
+      bottom: -52vmax;
+      transform: rotate(-13deg);
+      opacity: .82;
+      animation-delay: -6s;
+    }
+
+    .brand {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-top: -1.2rem;
+      padding: 2rem;
+      animation: arrive 1.35s var(--ease) both;
+    }
+
+    .brand h1 {
+      margin: 0;
+      color: var(--accent);
+      font-size: clamp(5.5rem, 16vw, 11rem);
+      font-weight: 780;
+      line-height: 1;
+      letter-spacing: -.095em;
+      padding-right: .095em;
+      user-select: none;
+      text-shadow: 0 16px 64px rgba(244, 119, 97, .07);
+    }
+
+    .line {
+      width: clamp(72px, 11vw, 112px);
+      height: 2px;
+      margin-top: clamp(30px, 5vh, 52px);
+      overflow: hidden;
+      background: rgba(244, 119, 97, .16);
+      border-radius: 999px;
+      animation: appear .85s ease-out .65s both;
+    }
+
+    .line span {
+      display: block;
+      width: 45%;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--accent);
+      animation: flow 2.5s cubic-bezier(.65, 0, .35, 1) 1s infinite;
+    }
+
+    @keyframes arrive {
+      from { opacity: 0; filter: blur(10px); transform: translateY(24px) scale(.97); }
+      to { opacity: 1; filter: blur(0); transform: translateY(0) scale(1); }
+    }
+
+    @keyframes appear {
+      from { opacity: 0; transform: scaleX(.5); }
+      to { opacity: 1; transform: scaleX(1); }
+    }
+
+    @keyframes flow {
+      0% { transform: translateX(-120%) scaleX(.65); opacity: .35; }
+      48% { transform: translateX(120%) scaleX(1.1); opacity: 1; }
+      100% { transform: translateX(320%) scaleX(.7); opacity: .35; }
+    }
+
+    @keyframes breathe {
+      from { opacity: .36; transform: translate3d(-2%, 1%, 0) scale(.95); }
+      to { opacity: .62; transform: translate3d(2%, -2%, 0) scale(1.06); }
+    }
+
+    @keyframes drift {
+      from { translate: -1% 0; }
+      to { translate: 1% 1.5%; }
+    }
+
+    @media (max-width: 600px) {
+      .arc--top { top: -34vmax; left: -74vmax; }
+      .arc--bottom { right: -74vmax; bottom: -35vmax; }
+      .light { filter: blur(44px); }
+      .brand { margin-top: -1rem; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="scene" aria-label="Free">
+    <div class="light light--top" aria-hidden="true"></div>
+    <div class="light light--bottom" aria-hidden="true"></div>
+    <div class="arc arc--top" aria-hidden="true"></div>
+    <div class="arc arc--bottom" aria-hidden="true"></div>
+
+    <div class="brand">
+      <h1>Free</h1>
+      <div class="line" aria-hidden="true"><span></span></div>
+    </div>
+  </main>
+</body>
+</html>
