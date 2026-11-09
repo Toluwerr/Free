@@ -26,8 +26,7 @@
   </style>
 </head>
 <body>
-  <canvas id="surface" aria-label="Draggable shapes"></canvas>
-
+  <canvas id="surface" aria-label="Draggable pill and container"></canvas>
   <script>
     (() => {
       'use strict';
@@ -36,23 +35,21 @@
       const context = canvas.getContext('2d', { alpha: false });
       if (!context) return;
 
-      // Canvas only receives finished pixels. Shapes are never drawn with its APIs.
       const BACKGROUND = [16, 17, 19];
       const FILL = [44, 46, 50];
       const MAX_PIXELS = 5_000_000;
+      const HALF_PI = Math.PI * 0.5;
       const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([0x01020304]).buffer)[0] === 4;
-
+      const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
       const pack = (r, g, b) => LITTLE_ENDIAN
         ? ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0
         : ((r << 24) | (g << 16) | (b << 8) | 255) >>> 0;
 
       const BACKGROUND_PIXEL = pack(...BACKGROUND);
       const FILL_PIXEL = pack(...FILL);
-      const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-
       const shapes = [
-        { x: 0, y: 0, w: 340, h: 220, radius: 24, drawn: null },
-        { x: 0, y: 0, w: 144, h: 48, radius: 24, drawn: null }
+        { x: 0, y: 0, w: 340, h: 220, radius: 24, radiusMax: 24, shoulder: 28, depth: 14, drawn: null },
+        { x: 0, y: 0, w: 144, h: 48, radius: 24, radiusMax: 24, shoulder: 18, depth: 10, drawn: null }
       ];
 
       let viewportWidth = 1;
@@ -62,22 +59,74 @@
       let scaleX = 1;
       let scaleY = 1;
       let framebuffer = null;
-      let bytes = null;
       let pixels = null;
+      let bytes = null;
       let initialized = false;
       let fullRedraw = true;
       let frameRequested = false;
       let drag = null;
 
-      // A rounded rectangle described by distance from its boundary, in CSS pixels.
-      // Negative: inside; positive: outside. No native paths or border radii.
       function distanceToShape(x, y, shape) {
-        const halfW = shape.w * 0.5;
-        const halfH = shape.h * 0.5;
-        const qx = Math.abs(x - shape.x - halfW) - (halfW - shape.radius);
-        const qy = Math.abs(y - shape.y - halfH) - (halfH - shape.radius);
-        return Math.hypot(Math.max(qx, 0), Math.max(qy, 0))
-          + Math.min(Math.max(qx, qy), 0) - shape.radius;
+        const hx = shape.w * 0.5;
+        const hy = shape.h * 0.5;
+        const qx = Math.abs(x - shape.x - hx) - (hx - shape.radius);
+        const qy = Math.abs(y - shape.y - hy) - (hy - shape.radius);
+        return (qx > 0 && qy > 0 ? Math.hypot(qx, qy) : Math.max(qx, qy)) - shape.radius;
+      }
+
+      function sampleSurface(shape, x, y) {
+        const hx = shape.w * 0.5;
+        const hy = shape.h * 0.5;
+        const dx = x - shape.x - hx;
+        const dy = y - shape.y - hy;
+        const qx = Math.abs(dx) - (hx - shape.radius);
+        const qy = Math.abs(dy) - (hy - shape.radius);
+        let distance;
+        let nx;
+        let ny;
+        let contourCurvature = 0;
+
+        if (qx > 0 && qy > 0) {
+          const length = Math.hypot(qx, qy);
+          const inverse = 1 / length;
+          distance = length - shape.radius;
+          nx = Math.sign(dx) * qx * inverse;
+          ny = Math.sign(dy) * qy * inverse;
+          contourCurvature = inverse;
+        } else if (qx >= qy) {
+          distance = qx - shape.radius;
+          nx = Math.sign(dx) || 1;
+          ny = 0;
+        } else {
+          distance = qy - shape.radius;
+          nx = 0;
+          ny = Math.sign(dy) || 1;
+        }
+
+        if (distance >= 0) return null;
+
+        const shoulder = Math.max(0.01, Math.min(shape.shoulder, hx, hy));
+        const inset = Math.min(-distance, shoulder);
+        const phase = inset * HALF_PI / shoulder;
+        const height = shape.depth * 0.5 * Math.sin(phase);
+        const gradient = inset < shoulder
+          ? shape.depth * HALF_PI * 0.5 * Math.cos(phase) / shoulder
+          : 0;
+        const inverseLength = 1 / Math.hypot(gradient, 1);
+        const bend = inset < shoulder
+          ? -shape.depth * HALF_PI * HALF_PI * 0.5 * Math.sin(phase) / (shoulder * shoulder)
+          : 0;
+
+        return {
+          distance,
+          thickness: height * 2,
+          frontZ: height,
+          backZ: -height,
+          frontNormal: [gradient * nx * inverseLength, gradient * ny * inverseLength, inverseLength],
+          backNormal: [gradient * nx * inverseLength, gradient * ny * inverseLength, -inverseLength],
+          meridianCurvature: bend * inverseLength * inverseLength * inverseLength,
+          transverseCurvature: -gradient * contourCurvature * inverseLength
+        };
       }
 
       function snapshot(shape) {
@@ -96,12 +145,11 @@
         const result = [];
         for (const rect of rectangles) {
           if (!rect) continue;
-          let joined = { ...rect };
+          let joined = rect;
           for (let i = 0; i < result.length;) {
             const current = result[i];
-            const touches = joined.x0 <= current.x1 && current.x0 <= joined.x1
-              && joined.y0 <= current.y1 && current.y0 <= joined.y1;
-            if (touches) {
+            if (joined.x0 <= current.x1 && current.x0 <= joined.x1
+              && joined.y0 <= current.y1 && current.y0 <= joined.y1) {
               joined = {
                 x0: Math.min(joined.x0, current.x0),
                 y0: Math.min(joined.y0, current.y0),
@@ -136,33 +184,33 @@
         const y1 = Math.min(area.y1, dirty.y1);
         if (x0 >= x1 || y0 >= y1) return;
 
-        // Interior pixels need one distance test. Boundary pixels are resolved
-        // with 16 independently tested subpixel positions for accurate coverage.
-        const edgeWidth = 0.72 / Math.min(scaleX, scaleY);
+        const halfDiagonal = 0.5 * Math.hypot(1 / scaleX, 1 / scaleY);
+        const quarterX = 0.25 / scaleX;
+        const quarterY = 0.25 / scaleY;
 
         for (let py = y0; py < y1; py++) {
           const cy = (py + 0.5) / scaleY;
           for (let px = x0; px < x1; px++) {
             const cx = (px + 0.5) / scaleX;
             const distance = distanceToShape(cx, cy, shape);
-            if (distance >= edgeWidth) continue;
+            if (distance >= halfDiagonal) continue;
 
             const index = py * rasterWidth + px;
-            if (distance <= -edgeWidth) {
+            if (distance <= -halfDiagonal) {
               pixels[index] = FILL_PIXEL;
               continue;
             }
 
             let inside = 0;
             for (let sy = 0; sy < 4; sy++) {
-              const sampleY = (py + (sy + 0.5) * 0.25) / scaleY;
+              const sampleY = cy + (sy - 1.5) * quarterY;
               for (let sx = 0; sx < 4; sx++) {
-                const sampleX = (px + (sx + 0.5) * 0.25) / scaleX;
+                const sampleX = cx + (sx - 1.5) * quarterX;
                 if (distanceToShape(sampleX, sampleY, shape) < 0) inside++;
               }
             }
 
-            if (inside === 0) continue;
+            if (!inside) continue;
             if (inside === 16) {
               pixels[index] = FILL_PIXEL;
               continue;
@@ -215,21 +263,16 @@
       }
 
       function resize() {
-        const previousWidth = viewportWidth;
-        const previousHeight = viewportHeight;
         viewportWidth = Math.max(1, window.innerWidth);
         viewportHeight = Math.max(1, window.innerHeight);
+        const desiredDensity = Math.min(Math.max(1, window.devicePixelRatio || 1), 2.5);
+        const density = Math.min(desiredDensity,
+          Math.sqrt(MAX_PIXELS / (viewportWidth * viewportHeight)));
 
-        const density = Math.max(0.75, Math.min(
-          window.devicePixelRatio || 1,
-          2.5,
-          Math.sqrt(MAX_PIXELS / (viewportWidth * viewportHeight))
-        ));
         rasterWidth = Math.max(1, Math.round(viewportWidth * density));
         rasterHeight = Math.max(1, Math.round(viewportHeight * density));
         scaleX = rasterWidth / viewportWidth;
         scaleY = rasterHeight / viewportHeight;
-
         canvas.width = rasterWidth;
         canvas.height = rasterHeight;
         framebuffer = context.createImageData(rasterWidth, rasterHeight);
@@ -238,7 +281,14 @@
 
         const container = shapes[0];
         const pill = shapes[1];
-        container.w = Math.max(1, Math.min(340, viewportWidth - 36));
+        container.w = Math.min(340, Math.max(1, viewportWidth - 36));
+        container.h = Math.min(220, Math.max(1, viewportHeight - 36));
+        pill.w = Math.min(144, Math.max(1, viewportWidth - 24));
+        pill.h = Math.min(48, Math.max(1, viewportHeight - 24));
+
+        for (const shape of shapes) {
+          shape.radius = Math.min(shape.radiusMax, shape.w * 0.5, shape.h * 0.5);
+        }
 
         if (!initialized) {
           container.x = (viewportWidth - container.w) * 0.5;
@@ -246,17 +296,8 @@
           pill.x = (viewportWidth - pill.w) * 0.5;
           pill.y = viewportHeight * 0.44 + 160;
           initialized = true;
-        } else {
-          // Preserve user placement through resizing, then constrain to the viewport.
-          if (previousWidth !== viewportWidth || previousHeight !== viewportHeight) {
-            for (const shape of shapes) {
-              shape.x = clamp(shape.x, 0, Math.max(0, viewportWidth - shape.w));
-              shape.y = clamp(shape.y, 0, Math.max(0, viewportHeight - shape.h));
-            }
-          }
         }
 
-        // On very small viewports the pill can extend past the edge; keep it usable.
         for (const shape of shapes) {
           shape.x = clamp(shape.x, 0, Math.max(0, viewportWidth - shape.w));
           shape.y = clamp(shape.y, 0, Math.max(0, viewportHeight - shape.h));
@@ -274,7 +315,7 @@
 
       function hitTest(x, y) {
         for (let i = shapes.length - 1; i >= 0; i--) {
-          if (distanceToShape(x, y, shapes[i]) <= 0) return shapes[i];
+          if (sampleSurface(shapes[i], x, y)) return shapes[i];
         }
         return null;
       }
@@ -318,7 +359,9 @@
       function release(event) {
         if (!drag || drag.id !== event.pointerId) return;
         drag = null;
-        canvas.style.cursor = event.pointerType === 'touch' ? 'default' : 'grab';
+        const point = position(event);
+        canvas.style.cursor = event.pointerType === 'touch'
+          ? 'default' : hitTest(point.x, point.y) ? 'grab' : 'default';
       }
 
       canvas.addEventListener('pointerup', release);
