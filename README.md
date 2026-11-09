@@ -1,4 +1,4 @@
-![Free banner](assets/free-banner.webp)
+![Free banner](assets/free-banner.svg)
 
 # Free
 
