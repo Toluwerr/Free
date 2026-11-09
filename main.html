@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title></title>
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+    }
+
+    body { background: #101113; }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="surface" aria-label="Draggable shapes"></canvas>
+
+  <script>
+    (() => {
+      'use strict';
+
+      const canvas = document.getElementById('surface');
+      const context = canvas.getContext('2d', { alpha: false });
+      if (!context) return;
+
+      // Canvas only receives finished pixels. Shapes are never drawn with its APIs.
+      const BACKGROUND = [16, 17, 19];
+      const FILL = [44, 46, 50];
+      const MAX_PIXELS = 5_000_000;
+      const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([0x01020304]).buffer)[0] === 4;
+
+      const pack = (r, g, b) => LITTLE_ENDIAN
+        ? ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0
+        : ((r << 24) | (g << 16) | (b << 8) | 255) >>> 0;
+
+      const BACKGROUND_PIXEL = pack(...BACKGROUND);
+      const FILL_PIXEL = pack(...FILL);
+      const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+      const shapes = [
+        { x: 0, y: 0, w: 340, h: 220, radius: 24, drawn: null },
+        { x: 0, y: 0, w: 144, h: 48, radius: 24, drawn: null }
+      ];
+
+      let viewportWidth = 1;
+      let viewportHeight = 1;
+      let rasterWidth = 1;
+      let rasterHeight = 1;
+      let scaleX = 1;
+      let scaleY = 1;
+      let framebuffer = null;
+      let bytes = null;
+      let pixels = null;
+      let initialized = false;
+      let fullRedraw = true;
+      let frameRequested = false;
+      let drag = null;
+
+      // A rounded rectangle described by distance from its boundary, in CSS pixels.
+      // Negative: inside; positive: outside. No native paths or border radii.
+      function distanceToShape(x, y, shape) {
+        const halfW = shape.w * 0.5;
+        const halfH = shape.h * 0.5;
+        const qx = Math.abs(x - shape.x - halfW) - (halfW - shape.radius);
+        const qy = Math.abs(y - shape.y - halfH) - (halfH - shape.radius);
+        return Math.hypot(Math.max(qx, 0), Math.max(qy, 0))
+          + Math.min(Math.max(qx, qy), 0) - shape.radius;
+      }
+
+      function snapshot(shape) {
+        return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
+      }
+
+      function bounds(shape) {
+        const x0 = clamp(Math.floor(shape.x * scaleX) - 2, 0, rasterWidth);
+        const y0 = clamp(Math.floor(shape.y * scaleY) - 2, 0, rasterHeight);
+        const x1 = clamp(Math.ceil((shape.x + shape.w) * scaleX) + 2, 0, rasterWidth);
+        const y1 = clamp(Math.ceil((shape.y + shape.h) * scaleY) + 2, 0, rasterHeight);
+        return x1 > x0 && y1 > y0 ? { x0, y0, x1, y1 } : null;
+      }
+
+      function mergeRectangles(rectangles) {
+        const result = [];
+        for (const rect of rectangles) {
+          if (!rect) continue;
+          let joined = { ...rect };
+          for (let i = 0; i < result.length;) {
+            const current = result[i];
+            const touches = joined.x0 <= current.x1 && current.x0 <= joined.x1
+              && joined.y0 <= current.y1 && current.y0 <= joined.y1;
+            if (touches) {
+              joined = {
+                x0: Math.min(joined.x0, current.x0),
+                y0: Math.min(joined.y0, current.y0),
+                x1: Math.max(joined.x1, current.x1),
+                y1: Math.max(joined.y1, current.y1)
+              };
+              result.splice(i, 1);
+              i = 0;
+            } else {
+              i++;
+            }
+          }
+          result.push(joined);
+        }
+        return result;
+      }
+
+      function clearPixels(rect) {
+        for (let y = rect.y0; y < rect.y1; y++) {
+          const start = y * rasterWidth + rect.x0;
+          pixels.fill(BACKGROUND_PIXEL, start, start + rect.x1 - rect.x0);
+        }
+      }
+
+      function paintShape(shape, dirty) {
+        const area = bounds(shape);
+        if (!area) return;
+
+        const x0 = Math.max(area.x0, dirty.x0);
+        const y0 = Math.max(area.y0, dirty.y0);
+        const x1 = Math.min(area.x1, dirty.x1);
+        const y1 = Math.min(area.y1, dirty.y1);
+        if (x0 >= x1 || y0 >= y1) return;
+
+        // Interior pixels need one distance test. Boundary pixels are resolved
+        // with 16 independently tested subpixel positions for accurate coverage.
+        const edgeWidth = 0.72 / Math.min(scaleX, scaleY);
+
+        for (let py = y0; py < y1; py++) {
+          const cy = (py + 0.5) / scaleY;
+          for (let px = x0; px < x1; px++) {
+            const cx = (px + 0.5) / scaleX;
+            const distance = distanceToShape(cx, cy, shape);
+            if (distance >= edgeWidth) continue;
+
+            const index = py * rasterWidth + px;
+            if (distance <= -edgeWidth) {
+              pixels[index] = FILL_PIXEL;
+              continue;
+            }
+
+            let inside = 0;
+            for (let sy = 0; sy < 4; sy++) {
+              const sampleY = (py + (sy + 0.5) * 0.25) / scaleY;
+              for (let sx = 0; sx < 4; sx++) {
+                const sampleX = (px + (sx + 0.5) * 0.25) / scaleX;
+                if (distanceToShape(sampleX, sampleY, shape) < 0) inside++;
+              }
+            }
+
+            if (inside === 0) continue;
+            if (inside === 16) {
+              pixels[index] = FILL_PIXEL;
+              continue;
+            }
+
+            const alpha = inside / 16;
+            const inverse = 1 - alpha;
+            const offset = index * 4;
+            bytes[offset] = Math.round(bytes[offset] * inverse + FILL[0] * alpha);
+            bytes[offset + 1] = Math.round(bytes[offset + 1] * inverse + FILL[1] * alpha);
+            bytes[offset + 2] = Math.round(bytes[offset + 2] * inverse + FILL[2] * alpha);
+            bytes[offset + 3] = 255;
+          }
+        }
+      }
+
+      function render() {
+        frameRequested = false;
+        if (!framebuffer) return;
+
+        const dirty = [];
+        if (fullRedraw) {
+          dirty.push({ x0: 0, y0: 0, x1: rasterWidth, y1: rasterHeight });
+        } else {
+          for (const shape of shapes) {
+            const old = shape.drawn;
+            if (!old || old.x !== shape.x || old.y !== shape.y
+              || old.w !== shape.w || old.h !== shape.h) {
+              if (old) dirty.push(bounds(old));
+              dirty.push(bounds(shape));
+            }
+          }
+        }
+
+        for (const area of mergeRectangles(dirty)) {
+          clearPixels(area);
+          for (const shape of shapes) paintShape(shape, area);
+          context.putImageData(framebuffer, 0, 0,
+            area.x0, area.y0, area.x1 - area.x0, area.y1 - area.y0);
+        }
+
+        for (const shape of shapes) shape.drawn = snapshot(shape);
+        fullRedraw = false;
+      }
+
+      function requestRender() {
+        if (frameRequested) return;
+        frameRequested = true;
+        requestAnimationFrame(render);
+      }
+
+      function resize() {
+        const previousWidth = viewportWidth;
+        const previousHeight = viewportHeight;
+        viewportWidth = Math.max(1, window.innerWidth);
+        viewportHeight = Math.max(1, window.innerHeight);
+
+        const density = Math.max(0.75, Math.min(
+          window.devicePixelRatio || 1,
+          2.5,
+          Math.sqrt(MAX_PIXELS / (viewportWidth * viewportHeight))
+        ));
+        rasterWidth = Math.max(1, Math.round(viewportWidth * density));
+        rasterHeight = Math.max(1, Math.round(viewportHeight * density));
+        scaleX = rasterWidth / viewportWidth;
+        scaleY = rasterHeight / viewportHeight;
+
+        canvas.width = rasterWidth;
+        canvas.height = rasterHeight;
+        framebuffer = context.createImageData(rasterWidth, rasterHeight);
+        bytes = framebuffer.data;
+        pixels = new Uint32Array(bytes.buffer);
+
+        const container = shapes[0];
+        const pill = shapes[1];
+        container.w = Math.max(1, Math.min(340, viewportWidth - 36));
+
+        if (!initialized) {
+          container.x = (viewportWidth - container.w) * 0.5;
+          container.y = viewportHeight * 0.44 - container.h * 0.5;
+          pill.x = (viewportWidth - pill.w) * 0.5;
+          pill.y = viewportHeight * 0.44 + 160;
+          initialized = true;
+        } else {
+          // Preserve user placement through resizing, then constrain to the viewport.
+          if (previousWidth !== viewportWidth || previousHeight !== viewportHeight) {
+            for (const shape of shapes) {
+              shape.x = clamp(shape.x, 0, Math.max(0, viewportWidth - shape.w));
+              shape.y = clamp(shape.y, 0, Math.max(0, viewportHeight - shape.h));
+            }
+          }
+        }
+
+        // On very small viewports the pill can extend past the edge; keep it usable.
+        for (const shape of shapes) {
+          shape.x = clamp(shape.x, 0, Math.max(0, viewportWidth - shape.w));
+          shape.y = clamp(shape.y, 0, Math.max(0, viewportHeight - shape.h));
+          shape.drawn = null;
+        }
+
+        fullRedraw = true;
+        requestRender();
+      }
+
+      function position(event) {
+        const rect = canvas.getBoundingClientRect();
+        return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      }
+
+      function hitTest(x, y) {
+        for (let i = shapes.length - 1; i >= 0; i--) {
+          if (distanceToShape(x, y, shapes[i]) <= 0) return shapes[i];
+        }
+        return null;
+      }
+
+      canvas.addEventListener('pointerdown', (event) => {
+        if (drag || (event.pointerType === 'mouse' && event.button !== 0)) return;
+        const point = position(event);
+        const shape = hitTest(point.x, point.y);
+        if (!shape) return;
+
+        drag = {
+          id: event.pointerId,
+          shape,
+          offsetX: point.x - shape.x,
+          offsetY: point.y - shape.y
+        };
+        canvas.setPointerCapture(event.pointerId);
+        canvas.style.cursor = 'grabbing';
+        event.preventDefault();
+      });
+
+      canvas.addEventListener('pointermove', (event) => {
+        const point = position(event);
+        if (!drag || drag.id !== event.pointerId) {
+          if (!drag && event.pointerType !== 'touch') {
+            canvas.style.cursor = hitTest(point.x, point.y) ? 'grab' : 'default';
+          }
+          return;
+        }
+
+        const shape = drag.shape;
+        const x = clamp(point.x - drag.offsetX, 0, Math.max(0, viewportWidth - shape.w));
+        const y = clamp(point.y - drag.offsetY, 0, Math.max(0, viewportHeight - shape.h));
+        if (x !== shape.x || y !== shape.y) {
+          shape.x = x;
+          shape.y = y;
+          requestRender();
+        }
+      });
+
+      function release(event) {
+        if (!drag || drag.id !== event.pointerId) return;
+        drag = null;
+        canvas.style.cursor = event.pointerType === 'touch' ? 'default' : 'grab';
+      }
+
+      canvas.addEventListener('pointerup', release);
+      canvas.addEventListener('pointercancel', release);
+      canvas.addEventListener('lostpointercapture', release);
+      window.addEventListener('blur', () => { drag = null; canvas.style.cursor = 'default'; });
+      window.addEventListener('resize', resize);
+      resize();
+    })();
+  </script>
+</body>
+</html>
