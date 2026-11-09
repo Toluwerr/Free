@@ -7,311 +7,187 @@
   <meta name="color-scheme" content="dark">
   <title>Free</title>
   <style>
-    :root { color-scheme: dark; background: #101010; }
-    *, *::before, *::after { box-sizing: border-box; }
-    html, body { width: 100%; min-height: 100%; margin: 0; background: #101010; }
-    body { overflow: hidden; font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    .scene { position: fixed; inset: 0; overflow: hidden; background: #101010; isolation: isolate; }
-    canvas { position: absolute; display: block; inset: 0; width: 100%; height: 100%; }
-    .veil { position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg, rgba(0,0,0,.10), transparent 35%, transparent 73%, rgba(0,0,0,.18)); }
-    .identity { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; user-select: none; }
-    .identity span { display: block; margin-top: .09em; padding-right: .09em; color: #f47761; font-size: clamp(90px, 15.5vw, 220px); font-weight: 780; line-height: 1; letter-spacing: -.09em; opacity: 0; filter: blur(16px); transform: translateY(28px) scale(.95); animation: resolve 1.8s cubic-bezier(.16, 1, .3, 1) 3.7s forwards; text-shadow: 0 0 72px rgba(244,119,97,.09); }
-    @keyframes resolve { to { opacity: 1; filter: blur(0); transform: translateY(0) scale(1); } }
-    @media (prefers-reduced-motion: reduce) { .identity span { animation: none; opacity: 1; filter: none; transform: none; } }
+    *,*::before,*::after{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;width:100%;background:#101010}
+    body{overflow:hidden}
+    .stage{position:fixed;inset:0;overflow:hidden;background:#101010;isolation:isolate}
+    canvas{position:absolute;inset:0;display:block;width:100%;height:100%}
+    .shade{position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse 45% 22% at 50% 52%,rgba(16,16,16,.55),transparent 100%);}
+    .identity{position:absolute;inset:0;display:grid;place-items:center;pointer-events:none;user-select:none}
+    .wordmark{display:block;width:min(76vw,840px);height:auto;overflow:visible;opacity:0;transform:translateY(20px) scale(.965);animation:arrive 2.25s cubic-bezier(.18,.83,.18,1) 2.8s forwards}
+    @keyframes arrive{0%{opacity:0;transform:translateY(20px) scale(.965)}100%{opacity:1;transform:translateY(0) scale(1)}}
+    @media (max-width:620px){.wordmark{width:89vw}}
+    @media (prefers-reduced-motion:reduce){.wordmark{animation:none;opacity:1;transform:none}}
   </style>
 </head>
 <body>
-  <main class="scene" aria-label="Free">
-    <canvas id="surface" aria-hidden="true"></canvas>
-    <div class="veil" aria-hidden="true"></div>
-    <div class="identity" aria-hidden="true"><span>Free</span></div>
+  <main class="stage" aria-label="Free">
+    <canvas aria-hidden="true"></canvas>
+    <div class="shade" aria-hidden="true"></div>
+    <div class="identity">
+      <svg class="wordmark" xmlns="http://www.w3.org/2000/svg" viewBox="396 303 865 322" role="img" aria-label="Free">
+        <defs><linearGradient id="coral" x1="414" y1="350" x2="1240" y2="584" gradientUnits="userSpaceOnUse"><stop stop-color="#ff7963"/><stop offset=".58" stop-color="#fb7660"/><stop offset="1" stop-color="#f47761"/></linearGradient></defs>
+        <g class="wordmark" fill="url(#coral)" fill-rule="evenodd">
+    <path d="M415 432C416 389 429 352 456 336C470 327 485 325 504 325H684C676 363 659 392 621 395H507C469 395 440 410 415 432Z"/>
+    <path d="M413 488C413 454 438 428 478 428H628C620 464 596 496 562 498H486V593H413Z"/>
+    <path d="M640 593V485C640 432 674 393 728 393H786V450H748C719 450 705 471 705 499V593Z"/>
+    <path d="M904 388C965 388 1011 434 1011 491V504H855C859 530 879 548 905 548C924 548 938 539 947 523L1006 528C992 573 954 602 905 602C841 602 793 555 793 495C793 435 841 388 904 388Z M854 470H951C943 448 925 434 904 434C882 434 864 448 854 470Z"/>
+    <path d="M1133 388C1196 388 1240 434 1240 491V504H1084C1088 530 1108 548 1134 548C1153 548 1167 539 1177 523L1235 528C1221 572 1184 602 1134 602C1070 602 1022 555 1022 495C1022 435 1071 388 1133 388Z M1083 470H1180C1172 448 1155 434 1133 434C1110 434 1093 449 1083 470Z"/>
+  </g>
+      </svg>
+    </div>
   </main>
   <script>
-    (() => {
-      'use strict';
-      const canvas = document.getElementById('surface');
-      const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
-      function drawAlternate() {
-        const surface = document.createElement('canvas');
-        surface.setAttribute('aria-hidden', 'true');
-        canvas.replaceWith(surface);
-        const ctx = surface.getContext('2d', {alpha: false});
-        if (!ctx) return;
-        let w = 0, h = 0;
-        function resizeAlternative() {
-          const dpr = Math.min(devicePixelRatio || 1, 1.35);
-          const nw = Math.max(1, Math.round(innerWidth*dpr));
-          const nh = Math.max(1, Math.round(innerHeight*dpr));
-          if (nw===w && nh===h) return;
-          w=surface.width=nw; h=surface.height=nh;
-        }
-        const startAt=performance.now();
-        function point(a,k,t) {
-          let angle=a+t*(.22+k*.04);
-          const open=Math.min(1,Math.max(0,(t-2.55)/3.2));
-          const smooth=open*open*(3-2*open);
-          const rx=(.41+ k*.035)*(1+smooth*.69), ry=(.25+k*.055)*(1+smooth*.66);
-          let x=Math.cos(angle)*rx;
-          let y=Math.sin(angle)*ry;
-          let z=Math.sin(2*angle+k*2.1+t*.38)*.19;
-          const turn=k*1.12+t*.075;
-          let xp=x*Math.cos(turn)-z*Math.sin(turn);
-          let zp=x*Math.sin(turn)+z*Math.cos(turn);
-          let yp=y*Math.cos(.6+k*.27)-zp*Math.sin(.6+k*.27);
-          const perspective=1+zp*.35;
-          return [w*.5+xp*w*.91*perspective,h*.5+yp*h*1.07*perspective];
-        }
-        function animate(now){
-          resizeAlternative();
-          const t=reducedMotion.matches ? 5.5 : (now-startAt)*.001;
-          const base=ctx.createRadialGradient(w*.23,h*.21,0,w*.5,h*.5,w*.86);
-          base.addColorStop(0,'#201718'); base.addColorStop(.5,'#111011'); base.addColorStop(1,'#101010');
-          ctx.fillStyle=base; ctx.fillRect(0,0,w,h);
-          for (const light of [[.1,.1,.6],[.85,.9,.55]]) {
-            const halo=ctx.createRadialGradient(w*light[0],h*light[1],0,w*light[0],h*light[1],w*light[2]);
-            halo.addColorStop(0,'rgba(244,119,97,.10)');halo.addColorStop(1,'rgba(244,119,97,0)');
-            ctx.fillStyle=halo;ctx.fillRect(0,0,w,h);
-          }
-          const reveal=Math.min(1,Math.max(0,(t-.12)/2.4));
-          for(let k=2;k>=0;k--){
-            ctx.save();
-            ctx.globalAlpha=reveal;
-            ctx.beginPath();
-            for(let i=0;i<=180;i++){
-              const a=i/180*Math.PI*2, p=point(a,k,t);
-              if(i===0)ctx.moveTo(p[0],p[1]); else ctx.lineTo(p[0],p[1]);
-            }
-            ctx.closePath();
-            ctx.lineCap='round';ctx.lineJoin='round';
-            const thickness=Math.min(w,h)*(.063-k*.009);
-            ctx.shadowColor='rgba(240,84,65,.30)';ctx.shadowBlur=thickness*1.7;
-            ctx.lineWidth=thickness*1.35;ctx.strokeStyle='#3a1718';ctx.stroke();
-            ctx.shadowBlur=0;
-            const fill=ctx.createLinearGradient(0,h*.19,w,h*.8);
-            fill.addColorStop(0,'#f77b67');fill.addColorStop(.32,'#57211d');fill.addColorStop(.5,'#c64d41');fill.addColorStop(.76,'#27171a');fill.addColorStop(1,'#fa7c66');
-            ctx.lineWidth=thickness;ctx.strokeStyle=fill;ctx.stroke();
-            ctx.globalAlpha=reveal*.72;
-            ctx.lineWidth=Math.max(1,thickness*.115);
-            ctx.strokeStyle='rgba(255,190,157,.82)';
-            ctx.shadowColor='#f47761';ctx.shadowBlur=12;
-            ctx.stroke();
-            ctx.restore();
-          }
-          if(!reducedMotion.matches && !document.hidden) requestAnimationFrame(animate);
-        }
-        requestAnimationFrame(animate);
-        addEventListener('resize',resizeAlternative,{passive:true});
-        document.addEventListener('visibilitychange',()=>{if(!document.hidden)requestAnimationFrame(animate);});
-      }
-      const gl = canvas.getContext('webgl', { alpha: false, depth: false, stencil: false, antialias: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' });
-      if (!gl) { drawAlternate(); return; }
+(() => {
+  'use strict';
+  const canvas=document.querySelector('canvas');
+  const reduced=matchMedia('(prefers-reduced-motion: reduce)');
+  const config={quality:1};
+  const vertSource="\nattribute vec2 aPosition;\nvoid main() { gl_Position=vec4(aPosition,0.0,1.0); }\n";
+  const fragSource="\nprecision highp float;\nuniform vec2 uResolution;\nuniform float uTime;\n#define TAU 6.28318530718\n\nmat2 turn(float a) { float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }\nfloat blend(float a,float b,float k) {\n  float h=max(k-abs(a-b),0.)/k;\n  return min(a,b)-h*h*k*.25;\n}\n\nfloat strand(vec3 p,float t,float id) {\n  float phase=id*2.0943951;\n  p.xy*=turn(.30*sin(t*.15+phase));\n  p.xz*=turn(.43*sin(t*.13+phase*1.4)+phase*.24);\n  p.yz*=turn(.25*sin(t*.18-phase));\n  float a=atan(p.y,p.x);\n  float r=1.03 + .13*sin(3.*a-t*.39+phase) + .047*sin(5.*a+t*.27+phase*1.8);\n  float z=.28*sin(2.*a+t*.31+phase) + .09*cos(4.*a-t*.26+phase);\n  float width=.205 + .036*sin(4.*a+t*.4+phase);\n  vec2 crossSection=vec2(length(p.xy)-r,p.z-z);\n  return length(crossSection)-width;\n}\n\nfloat liquid(vec3 p,float t) {\n  // Advection bends the entire surface rather than moving separate decorations.\n  p.x += .055*sin(p.y*1.6+t*.29)*cos(p.z*1.5-t*.24);\n  p.y += .065*sin(p.z*2.3-t*.31)*cos(p.x*1.1+t*.16);\n  p.z += .045*sin(p.x*1.7+t*.23);\n  p.xy *= turn(.14*sin(t*.14));\n  p.xz *= turn(.13*cos(t*.11));\n  float one=strand(p,t,0.);\n  float two=strand(p.yzx,t,1.);\n  float three=strand(p.zxy,t,2.);\n  float body=blend(blend(one,two,.33),three,.30);\n  // Very small long-wavelength ripples, continuous in both space and time.\n  body+=.007*sin(11.*p.x+6.*p.y+t*.56)*sin(8.*p.z-4.*p.y-t*.42);\n  return body;\n}\n\nfloat scene(vec3 p,float t) {\n  float travel=smoothstep(0.,3.8,t);\n  p.y += .95*(1.-travel);\n  p.x -= .30*(1.-travel);\n  p *= mix(1.30,.87,travel);\n  return liquid(p,t*.67);\n}\n\nvec3 surfaceNormal(vec3 p,float t) {\n  vec2 e=vec2(.0025,0.);\n  return normalize(vec3(\n    scene(p+e.xyy,t)-scene(p-e.xyy,t),\n    scene(p+e.yxy,t)-scene(p-e.yxy,t),\n    scene(p+e.yyx,t)-scene(p-e.yyx,t)\n  ));\n}\n\nvec3 backdrop(vec2 uv,float t) {\n  vec3 dark=vec3(.055,.050,.051);\n  float a=length((uv-vec2(-.78,.68))*vec2(.90,1.07));\n  float b=length((uv-vec2(.93,-.80))*vec2(1.04,.93));\n  dark+=vec3(.12,.037,.030)*exp(-a*a*1.56)*(.77+.12*sin(t*.20));\n  dark+=vec3(.10,.027,.024)*exp(-b*b*1.65)*(.75+.14*cos(t*.17));\n  return dark;\n}\n\nfloat panel(vec3 direction,vec3 axis,float size) {\n  return pow(max(dot(direction,normalize(axis)),0.),size);\n}\n\nvec3 studio(vec3 dir,float t) {\n  vec3 c=vec3(.035,.028,.031);\n  c+=vec3(1.00,.78,.67)*panel(dir,vec3(-.47,.77,.65),11.)*1.18;\n  c+=vec3(1.00,.42,.30)*panel(dir,vec3(.89,.24,.45),36.)*.89;\n  c+=vec3(.80,.32,.28)*panel(dir,vec3(-.82,-.22,.58),25.)*.63;\n  c+=vec3(.88,.67,.58)*panel(dir,vec3(.16+sin(t*.13)*.20,.96,.33),66.)*.35;\n  return c;\n}\n\nvec3 paint(vec3 p,vec3 rd,vec3 n,vec2 uv,float t) {\n  vec3 view=-rd;\n  vec3 light=normalize(vec3(-.70,.82,1.08));\n  float diff=max(dot(n,light),0.);\n  float edge=pow(1.-clamp(dot(n,view),0.,1.),4.);\n  vec3 reflected=reflect(rd,n);\n  vec3 refracted=refract(rd,n,1./1.37);\n  float distortion=.10+.08*(1.-abs(n.z));\n  vec3 through=backdrop(uv+refracted.xy*distortion,t);\n  vec3 absorb=vec3(.84,.29,.205);\n  float density=.48+.52*sqrt(max(dot(n,view),0.));\n  vec3 transmitted=mix(through,absorb,.65*density+.16);\n  vec3 environment=studio(reflected,t);\n  float diffuseFill=.54+.43*diff;\n  float spec=pow(max(dot(n,normalize(light+view)),0.),118.);\n  float spec2=pow(max(dot(n,normalize(vec3(.75,-.55,1.1)+view)),0.),75.);\n  float rim=pow(max(dot(-n,normalize(vec3(.1,-.8,-.6))),0.),1.7);\n  vec3 result=transmitted*diffuseFill;\n  result+=environment*(.30+edge*.85);\n  result+=vec3(.98,.77,.62)*spec*1.48;\n  result+=vec3(1.,.43,.34)*spec2*.81;\n  result+=vec3(.55,.12,.085)*rim*.31;\n  result+=vec3(.98,.40,.29)*edge*.38;\n  return result;\n}\n\nvoid main() {\n  vec2 uv=(gl_FragCoord.xy-.5*uResolution)/uResolution.y;\n  vec3 ro=vec3(0.,0.,4.75);\n  ro.xz*=turn(.065*sin(uTime*.11));\n  vec3 forward=normalize(-ro);\n  vec3 right=normalize(cross(forward,vec3(0.,1.,0.)));\n  vec3 up=cross(right,forward);\n  vec3 ray=normalize(forward*2.15+uv.x*right+uv.y*up);\n  vec3 color=backdrop(uv,uTime);\n  float distanceTravelled=0.;\n  float nearest=10.;\n  bool hit=false;\n  for(int i=0;i<72;i++) {\n    vec3 p=ro+ray*distanceTravelled;\n    float d=scene(p,uTime);\n    nearest=min(nearest,d);\n    if(d<.003) { hit=true; break; }\n    distanceTravelled+=clamp(d*.83,.008,.27);\n    if(distanceTravelled>9.5) break;\n  }\n  if(hit) {\n    vec3 p=ro+ray*distanceTravelled;\n    vec3 n=surfaceNormal(p,uTime);\n    color=paint(p,ray,n,uv,uTime);\n  } else {\n    float halo=exp(-max(nearest,0.)*3.4);\n    color+=vec3(.23,.048,.037)*halo*.085;\n  }\n  color=color/(1.+color);\n  color=pow(max(color,vec3(0.)),vec3(.45454545));\n  gl_FragColor=vec4(color,1.);\n}\n";
+  let raf=0, previous=0, clock=reduced.matches?7:0, render=()=>{};
 
-      const vertexSource = `
-        attribute vec2 aPosition;
-        void main() { gl_Position = vec4(aPosition, 0.0, 1.0); }
-      `;
+  function getSize() {
+    const w=Math.max(1,innerWidth), h=Math.max(1,innerHeight);
+    const pixels=(navigator.hardwareConcurrency||4)<=4?680000:1040000;
+    const ratio=Math.min(devicePixelRatio||1,1.22,Math.sqrt(pixels/(w*h)));
+    return [Math.max(1,Math.round(w*ratio)),Math.max(1,Math.round(h*ratio))];
+  }
 
-      const fragmentSource = `
-        precision highp float;
-        uniform vec2 uResolution;
-        uniform float uTime;
-        #define PI 3.14159265359
-        mat2 rot(float a) { float c=cos(a),s=sin(a); return mat2(c,-s,s,c); }
-        float smoothUnion(float a,float b,float k){ float h=clamp(.5+.5*(b-a)/k,0.,1.); return mix(b,a,h)-k*h*(1.-h); }
-        float ring(vec3 p, float a, float t, float radius, float width, float phase) {
-          p.xy *= rot(a);
-          p.yz *= rot(.35*sin(t*.23+phase));
-          float ang = atan(p.y,p.x);
-          float envelope = radius + .14*sin(ang*3. + t*.7 + phase) + .06*sin(ang*6.-t*.38+phase*2.);
-          float bend = .38*sin(ang*2. - t*.62 + phase) + .11*cos(ang*4.+t*.45);
-          float ripple = .022*sin(ang*13. - t*2. + phase);
-          float d = length(vec2(length(p.xy)-envelope,p.z-bend)) - width - ripple;
-          return d;
-        }
-        float ribbon(vec3 p,float t) {
-          float spin = t*.18;
-          p.xz *= rot(.28*sin(t*.2));
-          p.xy *= rot(.12*sin(t*.3));
-          float a = ring(p, spin, t, 1.27,.20, 0.);
-          float b = ring(p.yzx, -.57+spin*.7, t, 1.12,.16, 2.3);
-          float c = ring(p.zxy, .77-spin*.5, t, 1.02,.13, 4.2);
-          return smoothUnion(smoothUnion(a,b,.12),c,.09);
-        }
-        float scene(vec3 p,float time) {
-          float settle = smoothstep(0.,2.3,time);
-          float t = time*.7;
-          p.y += (1.-settle)*2.3;
-          p.x += (1.-settle)*.35;
-          float open = smoothstep(2.5,5.65,time);
-          p.xy *= mix(1.,.60,open);
-          float d = ribbon(p,t);
-          return d;
-        }
-        vec3 normalAt(vec3 p,float t) {
-          const float e=.002;
-          vec2 h=vec2(1.,-1.)*.5773;
-          return normalize(h.xyy*scene(p+h.xyy*e,t)+h.yyx*scene(p+h.yyx*e,t)+h.yxy*scene(p+h.yxy*e,t)+h.xxx*scene(p+h.xxx*e,t));
-        }
-        vec3 background(vec2 uv) {
-          float top = exp(-length((uv-vec2(-.75,.9))*vec2(1.15,.85))*1.45);
-          float bottom = exp(-length((uv-vec2(.9,-.9))*vec2(.9,1.3))*1.7);
-          vec3 col = vec3(.043,.041,.045);
-          col += vec3(.15,.039,.027)*top*.55;
-          col += vec3(.14,.037,.028)*bottom*.47;
-          col *= 1.-.15*smoothstep(.4,1.8,length(uv));
-          return col;
-        }
-        vec3 environment(vec3 direction,float time){
-          vec3 col=vec3(.055,.045,.046);
-          float softbox=pow(max(0.,dot(direction,normalize(vec3(-.42,.74,.50)))),18.);
-          float strip=pow(max(0.,dot(direction,normalize(vec3(.8,.2,.56)))),56.);
-          float edge=pow(max(0.,dot(direction,normalize(vec3(-.8,-.2,.55)))),28.);
-          float sweep=pow(max(0.,dot(direction,normalize(vec3(sin(time*.22),.83,cos(time*.22)))),40.);
-          col+=vec3(1.,.77,.66)*softbox*.9;
-          col+=vec3(1.,.40,.28)*strip*.78;
-          col+=vec3(.52,.21,.17)*edge*.5;
-          col+=vec3(1.,.63,.49)*sweep*.28;
-          return col;
-        }
-        vec3 shade(vec3 p,vec3 ray,vec3 normal,vec2 uv,float time){
-          vec3 view = -ray;
-          vec3 light=normalize(vec3(-.65,.87,1.1));
-          float ndl=max(dot(normal,light),0.);
-          float fresnel=pow(1.-max(dot(normal,view),0.),5.);
-          vec3 reflected=reflect(ray,normal);
-          vec3 refracted=refract(ray,normal,1./1.35);
-          vec3 backdrop=background(uv+normal.xy*.15);
-          float thickness=.58+.42*pow(max(0.,dot(normal,view)),.5);
-          vec3 absorb=vec3(.83,.32,.23)*thickness;
-          vec3 transmitted=mix(backdrop,absorb,.72);
-          vec3 env=environment(reflected,time);
-          vec3 halfV=normalize(light+view);
-          float spec=pow(max(dot(normal,halfV),0.),120.);
-          vec3 secondary=normalize(vec3(.8,-.46,.7));
-          float spec2=pow(max(dot(normal,normalize(secondary+view)),0.),72.);
-          float backLight=pow(max(dot(-normal,normalize(vec3(.27,-.6,-.75))),0.),1.4);
-          vec3 liquid=transmitted*(.58+ndl*.46);
-          liquid+=vec3(.48,.075,.048)*backLight*.33;
-          liquid+=env*(.24+fresnel*.88);
-          liquid+=vec3(1.,.84,.71)*spec*1.65;
-          liquid+=vec3(1.,.35,.24)*spec2*.72;
-          liquid+=vec3(.99,.36,.25)*fresnel*.45;
-          return liquid;
-        }
-        void main() {
-          vec2 uv=(gl_FragCoord.xy-.5*uResolution)/uResolution.y;
-          vec3 ro=vec3(0.,0.,4.75);
-          ro.xz*=rot(.09*sin(uTime*.18));
-          ro.y=.10*sin(uTime*.17);
-          vec3 target=vec3(0.,0.,0.);
-          vec3 forward=normalize(target-ro);
-          vec3 right=normalize(cross(forward,vec3(0.,1.,0.)));
-          vec3 up=cross(right,forward);
-          vec3 rd=normalize(forward*2.2+uv.x*right+uv.y*up);
-          vec3 color=background(uv);
-          float travel=0., closest=10.;
-          float hit=0.;
-          for(int i=0;i<82;i++) {
-            vec3 p=ro+rd*travel;
-            float d=scene(p,uTime);
-            closest=min(closest,d);
-            if(d<.0025){hit=1.;break;}
-            travel+=clamp(d*.75,.009,.28);
-            if(travel>10.)break;
-          }
-          if(hit>.5){
-            vec3 p=ro+rd*travel;
-            vec3 n=normalAt(p,uTime);
-            color=shade(p,rd,n,uv,uTime);
-            float softGlow=exp(-max(closest,0.)*4.5)*.04;
-            color+=vec3(.25,.05,.035)*softGlow;
-          } else {
-            float halo=exp(-max(closest,0.)*3.3)*.06;
-            color+=vec3(.48,.1,.06)*halo;
-          }
-          color=color/(1.+color);
-          color=pow(max(color,vec3(0.)),vec3(1./2.2));
-          float dither=fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5453)-.5;
-          color+=dither/255.;
-          gl_FragColor=vec4(color,1.);
-        }
-      `;
+  function alternate() {
+    const ctx=canvas.getContext('2d',{alpha:false});
+    if(!ctx) return () => {};
+    let width=0,height=0;
+    function resize() {
+      const [w,h]=getSize();
+      if(w===width&&h===height) return;
+      width=canvas.width=w; height=canvas.height=h;
+    }
+    function ribbon(points,widthPx,t,shade) {
+      const [p0,p1,p2,p3]=points;
+      ctx.beginPath();
+      ctx.moveTo(p0[0],p0[1]);
+      ctx.bezierCurveTo(p1[0],p1[1],p2[0],p2[1],p3[0],p3[1]);
+      ctx.lineWidth=widthPx*1.46;
+      ctx.strokeStyle='rgba(102,31,29,.34)';
+      ctx.shadowColor='rgba(244,119,97,.34)';
+      ctx.shadowBlur=widthPx*.58;
+      ctx.lineCap='round';
+      ctx.stroke();
+      ctx.shadowBlur=0;
+      const g=ctx.createLinearGradient(width*.16,height*.18,width*.88,height*.80);
+      g.addColorStop(0,'#ffb1a0');
+      g.addColorStop(.21,'#c25148');
+      g.addColorStop(.51,'#4c211f');
+      g.addColorStop(.80,'#a8433a');
+      g.addColorStop(1,'#fa826c');
+      ctx.lineWidth=widthPx;
+      ctx.strokeStyle=g;
+      ctx.stroke();
+      ctx.lineWidth=Math.max(1,widthPx*.075);
+      ctx.strokeStyle='rgba(255,203,181,.72)';
+      ctx.stroke();
+    }
+    return function draw(t) {
+      resize();
+      const w=width,h=height;
+      const g=ctx.createRadialGradient(w*.40,h*.4,0,w*.5,h*.5,Math.max(w,h)*.84);
+      g.addColorStop(0,'#1e1415'); g.addColorStop(.55,'#131112');g.addColorStop(1,'#101010');
+      ctx.fillStyle=g;ctx.fillRect(0,0,w,h);
+      const progress=t/(t+2.0);
+      for(let i=0;i<3;i++){
+        const z=i*2.1;
+        const s=Math.sin(t*.34+z),c=Math.cos(t*.28-z);
+        const y=h*(.27+i*.22);
+        const pts=[
+          [-.20*w,h*(.32+i*.16)+s*h*.10],
+          [w*(.20+.04*s),h*(.11+i*.19)+c*h*.17],
+          [w*(.65+.07*c),h*(.88-i*.22)-s*h*.15],
+          [1.20*w,h*(.43+i*.11)+c*h*.16]
+        ];
+        ctx.globalAlpha=Math.min(1,progress*2);
+        ribbon(pts,Math.min(w,h)*(.16+i*.016),t,i);
+      }
+      ctx.globalAlpha=1;
+    };
+  }
 
-      function compile(type, source) {
-        const shader = gl.createShader(type);
-        gl.shaderSource(shader, source);
-        gl.compileShader(shader);
-        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-          console.error(gl.getShaderInfoLog(shader));
-          gl.deleteShader(shader);
-          return null;
-        }
-        return shader;
+  function renderer() {
+    let gl;
+    try { gl=canvas.getContext('webgl',{alpha:false,depth:false,antialias:false,preserveDrawingBuffer:false,powerPreference:'high-performance'}); } catch {}
+    if(!gl) return alternate();
+    function shader(type,source) {
+      const s=gl.createShader(type);
+      gl.shaderSource(s,source);
+      gl.compileShader(s);
+      if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){
+        console.warn('Shader compilation unavailable',gl.getShaderInfoLog(s));
+        gl.deleteShader(s);
+        return null;
       }
-      const vs = compile(gl.VERTEX_SHADER, vertexSource);
-      const fs = compile(gl.FRAGMENT_SHADER, fragmentSource);
-      if (!vs || !fs) { drawAlternate(); return; }
-      const program = gl.createProgram();
-      gl.attachShader(program, vs);
-      gl.attachShader(program, fs);
-      gl.linkProgram(program);
-      gl.deleteShader(vs);
-      gl.deleteShader(fs);
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        console.error(gl.getProgramInfoLog(program));
-        drawAlternate();
-        return;
+      return s;
+    }
+    const vs=shader(gl.VERTEX_SHADER,vertSource);
+    const fs=shader(gl.FRAGMENT_SHADER,fragSource);
+    if(!vs||!fs) return alternate();
+    const program=gl.createProgram();
+    gl.attachShader(program,vs);gl.attachShader(program,fs);
+    gl.linkProgram(program);
+    gl.deleteShader(vs);gl.deleteShader(fs);
+    if(!gl.getProgramParameter(program,gl.LINK_STATUS))return alternate();
+    gl.useProgram(program);
+    const buffer=gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);
+    const attrib=gl.getAttribLocation(program,'aPosition');
+    gl.enableVertexAttribArray(attrib);
+    gl.vertexAttribPointer(attrib,2,gl.FLOAT,false,0,0);
+    const resolution=gl.getUniformLocation(program,'uResolution');
+    const time=gl.getUniformLocation(program,'uTime');
+    let width=0,height=0;
+    canvas.addEventListener('webglcontextlost',event=>{
+      event.preventDefault();
+      cancelAnimationFrame(raf);
+    },{passive:false});
+    canvas.addEventListener('webglcontextrestored',()=>location.reload());
+    return function draw(t) {
+      const [w,h]=getSize();
+      if(w!==width||h!==height){
+        width=canvas.width=w;
+        height=canvas.height=h;
+        gl.viewport(0,0,w,h);
+        gl.uniform2f(resolution,w,h);
       }
-      gl.useProgram(program);
-      const position = gl.getAttribLocation(program, 'aPosition');
-      const resolution = gl.getUniformLocation(program, 'uResolution');
-      const time = gl.getUniformLocation(program, 'uTime');
-      const buffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]), gl.STATIC_DRAW);
-      gl.enableVertexAttribArray(position);
-      gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
-
-      let scale = Math.min(window.devicePixelRatio || 1, 1.15);
-      if ((navigator.hardwareConcurrency || 8) <= 4) scale = Math.min(scale, .85);
-      let width = 0, height = 0, frame = 0, sampleStart = 0;
-      let start = performance.now(), pausedAt = 0, elapsedPaused = 0;
-      function resize() {
-        const w = Math.max(1, Math.round(innerWidth * scale));
-        const h = Math.max(1, Math.round(innerHeight * scale));
-        if (w === width && h === height) return;
-        width = canvas.width = w;
-        height = canvas.height = h;
-        gl.viewport(0, 0, w, h);
-        gl.uniform2f(resolution, w, h);
-      }
-      function draw(now) {
-        if (document.hidden) { pausedAt = now; return; }
-        resize();
-        const seconds = reducedMotion.matches ? 5.5 : Math.max(0, (now-start-elapsedPaused)/1000);
-        gl.uniform1f(time, seconds);
-        gl.drawArrays(gl.TRIANGLES, 0, 6);
-        frame++;
-        if (!sampleStart) sampleStart = now;
-        if (frame >= 36) {
-          const fps = 36000 / Math.max(now-sampleStart, 1);
-          if (fps < 35 && scale > .52) scale = Math.max(.52,scale*.85);
-          else if (fps > 56 && scale < 1.12) scale = Math.min(1.12,scale*1.07);
-          frame = 0;
-          sampleStart = now;
-        }
-        if (!reducedMotion.matches) requestAnimationFrame(draw);
-      }
-      document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) {
-          if (pausedAt) elapsedPaused += performance.now()-pausedAt;
-          pausedAt = 0;
-          requestAnimationFrame(draw);
-        }
-      });
-      addEventListener('resize', resize, {passive: true});
-      requestAnimationFrame(draw);
-    })();
-  </script>
+      gl.uniform1f(time,t);
+      gl.drawArrays(gl.TRIANGLES,0,6);
+    };
+  }
+  render=renderer();
+  function frame(now) {
+    raf=0;
+    if(document.hidden) return;
+    if(previous) {
+      // Frame-rate-independent phase with a bound after long scheduling stalls.
+      clock+=reduced.matches?0:Math.min((now-previous)*.001,.05);
+    }
+    previous=now;
+    render(clock);
+    if(!reduced.matches) raf=requestAnimationFrame(frame);
+  }
+  function resume() {
+    if(document.hidden)return;
+    previous=0;
+    if(raf)cancelAnimationFrame(raf);
+    raf=requestAnimationFrame(frame);
+  }
+  document.addEventListener('visibilitychange',resume);
+  reduced.addEventListener?.('change',()=>{
+    if(reduced.matches)clock=Math.max(clock,7);
+    resume();
+  });
+  addEventListener('resize',()=>{if(reduced.matches)resume()},{passive:true});
+  resume();
+})();
+</script>
 </body>
 </html>
