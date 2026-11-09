@@ -39,6 +39,21 @@
       const MAX_DENSITY = 1.85;
       const IOR = 1.49;
       const BACKDROP_Z = -48;
+      const F0 = Math.pow((IOR - 1) / (IOR + 1), 2);
+      const DEFAULT_COLOR = [17, 18, 20];
+      const COLOR_STEPS = 8192;
+      const srgbLinear = new Float32Array(256);
+      const linearSrgb = new Uint8Array(COLOR_STEPS + 1);
+      for (let i = 0; i < 256; i++) {
+        const c = i / 255;
+        srgbLinear[i] = c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      }
+      for (let i = 0; i <= COLOR_STEPS; i++) {
+        const c = i / COLOR_STEPS;
+        linearSrgb[i] = Math.round(255 * (c <= 0.0031308
+          ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055));
+      }
+      const encodeLinear = c => linearSrgb[Math.round(clamp(c, 0, 1) * COLOR_STEPS)];
       const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([0x01020304]).buffer)[0] === 4;
       const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
       const pack = (r, g, b) => LITTLE_ENDIAN
@@ -69,6 +84,7 @@
       let fullRedraw = true;
       let frameRequested = false;
       let drag = null;
+      let backdropSource = null;
 
       function distanceToShape(x, y, shape) {
         const hx = shape.w * 0.5;
@@ -136,6 +152,7 @@
           backZ: -height,
           frontNormal: [gx * inverseLength, gy * inverseLength, inverseLength],
           backNormal: [gx * inverseLength, gy * inverseLength, -inverseLength],
+          edgeNormal: [nx, ny],
           meridianCurvature: bend * inverseLength * inverseLength * inverseLength,
           transverseCurvature: -radialSlope * contourCurvature * inverseLength
         };
@@ -195,29 +212,105 @@
           ? [sourceX, sourceY] : null;
       }
 
+      function smoothstep(a, b, x) {
+        const t = clamp((x - a) / (b - a), 0, 1);
+        return t * t * (3 - 2 * t);
+      }
+
+      function surfaceResponse(shape, x, y, surface) {
+        const inset = -surface.distance;
+        const rimWidth = Math.min(6, shape.h * 0.17, shape.radius * 0.28);
+        const rim = 1 - smoothstep(0, rimWidth, inset);
+        const edgeZ = 1 - rim * 0.965;
+        const edgeXY = Math.sqrt(Math.max(0, 1 - edgeZ * edgeZ));
+        const nx = surface.frontNormal[0] * (1 - rim) + surface.edgeNormal[0] * edgeXY;
+        const ny = surface.frontNormal[1] * (1 - rim) + surface.edgeNormal[1] * edgeXY;
+        const nz = surface.frontNormal[2] * (1 - rim) + edgeZ;
+        const length = Math.hypot(nx, ny, nz);
+        const cosine = clamp(nz / length, 0, 1);
+        const reflectance = F0 + (1 - F0) * (1 - cosine) ** 5;
+        const attenuation = Math.exp(-surface.thickness * 0.0014);
+        return [reflectance, attenuation, nx / length, ny / length];
+      }
+
+      function environmentResponse(base, reflected) {
+        const br = LITTLE_ENDIAN ? base & 255 : base >>> 24;
+        const bg = LITTLE_ENDIAN ? (base >>> 8) & 255 : (base >>> 16) & 255;
+        const bb = LITTLE_ENDIAN ? (base >>> 16) & 255 : (base >>> 8) & 255;
+        const er = LITTLE_ENDIAN ? reflected & 255 : reflected >>> 24;
+        const eg = LITTLE_ENDIAN ? (reflected >>> 8) & 255 : (reflected >>> 16) & 255;
+        const eb = LITTLE_ENDIAN ? (reflected >>> 16) & 255 : (reflected >>> 8) & 255;
+        const luma = 0.2126 * srgbLinear[br] + 0.7152 * srgbLinear[bg] + 0.0722 * srgbLinear[bb];
+        const environment = 0.285 - 0.235 * smoothstep(0.10, 0.78, luma);
+        const blend = 0.78;
+        return [
+          br, bg, bb,
+          environment * blend + srgbLinear[er] * (1 - blend),
+          environment * blend + srgbLinear[eg] * (1 - blend),
+          environment * blend + srgbLinear[eb] * (1 - blend)
+        ];
+      }
+
       function prepareOptics(shape) {
         const columns = Math.ceil(shape.w * 1.25) + 1;
         const rows = Math.ceil(shape.h * 1.25) + 1;
         const stepX = shape.w / (columns - 1);
         const stepY = shape.h / (rows - 1);
         const values = new Float32Array(columns * rows * 2);
+        const lighting = new Float32Array(columns * rows * 4);
+        const valid = new Uint8Array(columns * rows);
 
         for (let y = 0; y < rows; y++) {
           const py = shape.y + Math.min(shape.h, y * stepY);
           for (let x = 0; x < columns; x++) {
             const px = shape.x + Math.min(shape.w, x * stepX);
             const surface = sampleSurface(shape, px, py);
-            if (!surface) continue;
+            const lightIndex = (y * columns + x) * 4;
+            if (!surface) {
+              lighting[lightIndex] = 1;
+              continue;
+            }
+            lighting.set(surfaceResponse(shape, px, py, surface), lightIndex);
             const hit = trace(shape, px, py, surface);
             if (!hit) continue;
-            const index = (y * columns + x) * 2;
+            const cell = y * columns + x;
+            const index = cell * 2;
             values[index] = hit[0] - px;
             values[index + 1] = hit[1] - py;
+            valid[cell] = 1;
           }
         }
 
+        for (let pass = 0; pass < 4; pass++) {
+          let changes = 0;
+          const revised = values.slice();
+          const filled = valid.slice();
+          for (let y = 1; y < rows - 1; y++) {
+            for (let x = 1; x < columns - 1; x++) {
+              const cell = y * columns + x;
+              if (valid[cell] || lighting[cell * 4] === 1) continue;
+              let sumX = 0;
+              let sumY = 0;
+              let count = 0;
+              for (const neighbor of [cell - 1, cell + 1, cell - columns, cell + columns]) {
+                if (!valid[neighbor]) continue;
+                sumX += values[neighbor * 2];
+                sumY += values[neighbor * 2 + 1];
+                count++;
+              }
+              if (!count) continue;
+              revised[cell * 2] = sumX / count;
+              revised[cell * 2 + 1] = sumY / count;
+              filled[cell] = 1;
+              changes++;
+            }
+          }
+          values.set(revised);
+          valid.set(filled);
+          if (!changes) break;
+        }
         shape.optics = {
-          columns, rows, values,
+          columns, rows, values, lighting,
           inverseStepX: 1 / stepX,
           inverseStepY: 1 / stepY
         };
@@ -246,7 +339,44 @@
           + values[c] * w01 + values[d] * w11;
         const offsetY = values[a + 1] * w00 + values[b + 1] * w10
           + values[c + 1] * w01 + values[d + 1] * w11;
-        return sampleColor(x + offsetX, y + offsetY, input);
+        const edgeFade = smoothstep(0, 2.6, -distanceToShape(x, y, shape));
+        const base = sampleColor(x + offsetX * edgeFade, y + offsetY * edgeFade, input);
+        const lighting = optics.lighting;
+        const ia = a * 2;
+        const ib = b * 2;
+        const ic = c * 2;
+        const id = d * 2;
+        let reflectance;
+        let attenuation;
+        let normalX;
+        let normalY;
+        const edgeDistance = distanceToShape(x, y, shape);
+        if (edgeDistance > -7) {
+          const surface = sampleSurface(shape, x, y);
+          if (!surface) return base;
+          const direct = surfaceResponse(shape, x, y, surface);
+          reflectance = direct[0];
+          attenuation = direct[1];
+          normalX = direct[2];
+          normalY = direct[3];
+        } else {
+          reflectance = lighting[ia] * w00 + lighting[ib] * w10
+            + lighting[ic] * w01 + lighting[id] * w11;
+          attenuation = lighting[ia + 1] * w00 + lighting[ib + 1] * w10
+            + lighting[ic + 1] * w01 + lighting[id + 1] * w11;
+          normalX = lighting[ia + 2] * w00 + lighting[ib + 2] * w10
+            + lighting[ic + 2] * w01 + lighting[id + 2] * w11;
+          normalY = lighting[ia + 3] * w00 + lighting[ib + 3] * w10
+            + lighting[ic + 3] * w01 + lighting[id + 3] * w11;
+        }
+        const sceneReflection = sampleColor(x + normalX * 13, y + normalY * 13, input);
+        const response = environmentResponse(base, sceneReflection);
+        const transmission = (1 - reflectance) * attenuation;
+        return pack(
+          encodeLinear(srgbLinear[response[0]] * transmission + reflectance * response[3]),
+          encodeLinear(srgbLinear[response[1]] * transmission + reflectance * response[4]),
+          encodeLinear(srgbLinear[response[2]] * transmission + reflectance * response[5])
+        );
       }
 
       function snapshot(shape) {
@@ -288,19 +418,36 @@
       }
 
       function prepareBackdrop() {
+        if (!backdropSource) {
+          backdrop.fill(pack(...DEFAULT_COLOR));
+          return;
+        }
+        const { width: sw, height: sh, data } = backdropSource;
+        const rowScale = sh / rasterHeight;
+        const columnScale = sw / rasterWidth;
         for (let y = 0; y < rasterHeight; y++) {
-          const sy = (y + 0.5) / scaleY;
+          const sy = clamp((y + 0.5) * rowScale - 0.5, 0, sh - 1);
+          const top = Math.floor(sy);
+          const bottom = Math.min(top + 1, sh - 1);
+          const fy = sy - top;
           for (let x = 0; x < rasterWidth; x++) {
-            const sx = (x + 0.5) / scaleX;
-            const a = sx * 0.90 + sy * 0.31;
-            const b = sy * 0.88 - sx * 0.19;
-            const major = Math.abs(a - Math.round(a / 78) * 78);
-            const minor = Math.abs(b - Math.round(b / 126) * 126);
-            const stroke = 21 * clamp((2 - major) / 1.5, 0, 1)
-              + 10 * clamp((1.4 - minor) / 1.1, 0, 1);
-            const low = 3.8 * Math.sin(a / 170) + 2.5 * Math.sin(b / 114);
-            const value = Math.round(24 + low + stroke);
-            backdrop[y * rasterWidth + x] = pack(value, value + 1, value + 3);
+            const sx = clamp((x + 0.5) * columnScale - 0.5, 0, sw - 1);
+            const left = Math.floor(sx);
+            const right = Math.min(left + 1, sw - 1);
+            const fx = sx - left;
+            const o00 = (top * sw + left) * 4;
+            const o10 = (top * sw + right) * 4;
+            const o01 = (bottom * sw + left) * 4;
+            const o11 = (bottom * sw + right) * 4;
+            const w00 = (1 - fx) * (1 - fy);
+            const w10 = fx * (1 - fy);
+            const w01 = (1 - fx) * fy;
+            const w11 = fx * fy;
+            backdrop[y * rasterWidth + x] = pack(
+              Math.round(data[o00] * w00 + data[o10] * w10 + data[o01] * w01 + data[o11] * w11),
+              Math.round(data[o00 + 1] * w00 + data[o10 + 1] * w10 + data[o01 + 1] * w01 + data[o11 + 1] * w11),
+              Math.round(data[o00 + 2] * w00 + data[o10 + 2] * w10 + data[o01 + 2] * w01 + data[o11 + 2] * w11)
+            );
           }
         }
       }
@@ -560,6 +707,30 @@
       canvas.addEventListener('pointercancel', release);
       canvas.addEventListener('lostpointercapture', release);
       window.addEventListener('blur', () => { drag = null; canvas.style.cursor = 'default'; });
+      window.LiquidGlass = Object.freeze({
+        setBackdrop(image) {
+          if (!image || !Number.isSafeInteger(image.width)
+            || !Number.isSafeInteger(image.height)
+            || image.width < 1 || image.height < 1
+            || !image.data || image.data.length !== image.width * image.height * 4) {
+            throw new TypeError('Expected an RGBA image with valid width and height');
+          }
+          backdropSource = {
+            width: image.width,
+            height: image.height,
+            data: new Uint8ClampedArray(image.data)
+          };
+          if (backdrop) prepareBackdrop();
+          fullRedraw = true;
+          requestRender();
+        },
+        clearBackdrop() {
+          backdropSource = null;
+          if (backdrop) prepareBackdrop();
+          fullRedraw = true;
+          requestRender();
+        }
+      });
       window.addEventListener('resize', resize);
       resize();
     })();
