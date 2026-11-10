@@ -36,7 +36,7 @@
       if (!context) return;
 
       const MAX_PIXELS = 2_400_000;
-      const MAX_DENSITY = 1.7;
+      const MAX_DENSITY = 1.65;
       const MOTION_RESPONSE = 20;
       const MAX_VISUAL_LAG = 11;
       const LIQUID_FREQUENCY = 17;
@@ -44,7 +44,7 @@
       const IOR = 1.49;
       const SPECTRAL_IOR = [1.488, IOR, 1.492];
       const BACKDROP_Z = -48;
-      const CAUSTIC_IRRADIANCE = 0.0011;
+      const CAUSTIC_IRRADIANCE = 0.0016;
       const F0 = Math.pow((IOR - 1) / (IOR + 1), 2);
       const COLOR_STEPS = 8192;
       const srgbLinear = new Float32Array(256);
@@ -83,6 +83,8 @@
       let bytes = null;
       let backdrop = null;
       let litBackdropPixels = null;
+      let diffuseBackdrop = null;
+      let diffuseBackdropBytes = null;
       let litBackdropBytes = null;
       let containerPixels = null;
       let containerBytes = null;
@@ -270,22 +272,21 @@
         const rx = 2 * nz * nx;
         const ry = 2 * nz * ny;
         const rz = 2 * nz * nz - 1;
-        const upper = smoothstep(-0.85, -0.1, -ry) * 0.1;
-        const softbox = (1 - smoothstep(0.08, 0.26, Math.abs(ry + 0.71 + rx * 0.09)))
-          * smoothstep(-0.95, -0.35, rx) * (1 - smoothstep(0.32, 0.96, rx));
-        const side = (1 - smoothstep(0.045, 0.22, Math.abs(rx + 0.80 + ry * 0.12)))
-          * (1 - smoothstep(0.1, 0.95, ry));
-        const fill = (1 - smoothstep(0.07, 0.31, Math.abs(rx - 0.82 - ry * 0.07)))
-          * smoothstep(-0.9, -0.2, ry);
-        const horizon = 0.055 * (1 - smoothstep(0.12, 0.47, Math.abs(ry + 0.03)));
-        return reflectance * (0.07 + upper + horizon + 1.35 * softbox + 0.59 * side + 0.4 * fill + 0.07 * Math.max(0,rz));
+        const upper = 1 - smoothstep(0.065, 0.20, Math.abs(ry + 0.74 - rx * 0.08));
+        const softbox = 1 - smoothstep(0.09, 0.32, Math.abs(ry + 0.52 + 0.08 * rx));
+        const left = 1 - smoothstep(0.07, 0.21, Math.abs(rx + 0.73 + ry * 0.11));
+        const right = 1 - smoothstep(0.08, 0.24, Math.abs(rx - 0.83 + 0.09 * ry));
+        const lower = 1 - smoothstep(0.07, 0.19, Math.abs(ry - 0.81 + rx * 0.09));
+        const sky = 0.08 + 0.15 * smoothstep(-0.9, 0.4, -ry) + 0.045 * Math.max(0, rz);
+        const lobe = upper * 0.72 + softbox * 0.22 + left * 0.43 + right * 0.26 + lower * 0.17;
+        return reflectance * (sky + lobe);
       }
 
       function surfaceResponse(shape, x, y, surface) {
         const inset = -surface.distance;
-        const rimWidth = Math.min(5.3, shape.h * 0.115, shape.radius * 0.2);
+        const rimWidth = Math.min(9, shape.h * 0.23, shape.radius * 0.30);
         const rim = 1 - smoothstep(0, rimWidth, inset);
-        const edgeZ = 1 - rim * 0.982;
+        const edgeZ = 1 - rim * 0.981;
         const edgeXY = Math.sqrt(Math.max(0, 1 - edgeZ * edgeZ));
         const nx = surface.frontNormal[0] * (1 - rim) + surface.edgeNormal[0] * edgeXY;
         const ny = surface.frontNormal[1] * (1 - rim) + surface.edgeNormal[1] * edgeXY;
@@ -295,49 +296,54 @@
         const oy = ny / length;
         const oz = nz / length;
         const reflectance = F0 + (1 - F0) * (1 - oz) ** 5;
-        const attenuation = Math.exp(-surface.thickness * 0.00065);
+        const attenuation = Math.exp(-surface.thickness * 0.0008);
         const key = microfacet(ox, oy, oz, -0.38, -0.46, 0.802);
         const fill = microfacet(ox, oy, oz, 0.62, 0.13, 0.773);
         const kick = microfacet(ox, oy, oz, 0.08, -0.96, 0.265);
         const environment = environmentRadiance(ox, oy, oz, reflectance);
-        const direction = clamp(0.51 - surface.edgeNormal[1] * 0.39 - surface.edgeNormal[0] * 0.17, 0, 1);
-        const outerSheen = rim * rim * (0.003 + 0.036 * direction);
-        const innerRidge = smoothstep(1.6, 3.3, inset) * (1 - smoothstep(5.0, 10.5, inset));
-        const innerSheen = innerRidge * (0.0025 + 0.0125 * direction);
-        const grazing = smoothstep(0.15, 0.75, 1 - oz) * (1 - smoothstep(7, 17, inset));
-        const specular = Math.min(0.095, key * 0.47 + fill * 0.13 + kick * 0.095);
-        const volume = 0.0027 * (1 - rim) * (1 - rim);
-        const light = Math.min(0.1, environment * 0.37) + specular + outerSheen + innerSheen
-          + grazing * 0.005 + volume;
+        const direction = clamp(0.53 - surface.edgeNormal[1] * 0.39 - surface.edgeNormal[0] * 0.18, 0, 1);
+        const frontSheen = Math.exp(-Math.pow((inset - 1.05) / 1.32, 2)) * (0.014 + 0.070 * direction);
+        const meniscus = Math.exp(-Math.pow((inset - (shape.h < 80 ? 4.2 : 5.8)) / (shape.h < 80 ? 2.05 : 2.85), 2));
+        const innerSheen = meniscus * (0.007 + 0.040 * (0.38 + 0.62 * direction));
+        const bottomLobe = (1 - smoothstep(0.07, 0.24, Math.abs((2 * oz * oy) - 0.62))) * (1 - direction) * 0.016;
+        const highlight = Math.min(0.13, key * 0.59 + fill * 0.22 + kick * 0.15);
+        const innerBody = 0.0052 * smoothstep(1.4, 15, inset) * (1 - rim);
+        const light = Math.min(0.18, environment * 0.62 + highlight + frontSheen + innerSheen + bottomLobe + innerBody);
         return [reflectance, attenuation,
-          light * 0.955, light * 0.992, light * 1.042];
+          light * 0.95, light * 0.99, light * 1.04];
       }
 
       function stableRayOffset(shape, surface, x, y, ior, traced) {
+        const inset = -surface.distance;
         const ratio = 1 - 1 / ior;
-        const reach = Math.abs(BACKDROP_Z) + surface.thickness * 0.19;
+        const reach = Math.abs(BACKDROP_Z) + surface.thickness * 0.16;
         const normalX = surface.frontNormal[0] / surface.frontNormal[2];
         const normalY = surface.frontNormal[1] / surface.frontNormal[2];
         const rawX = normalX * ratio * reach;
         const rawY = normalY * ratio * reach;
         const magnitude = Math.hypot(rawX, rawY);
-        const limit = shape.h < 80 ? 10 : 17;
+        const limit = shape.h < 80 ? 12 : 20;
         const compression = magnitude > 0.00001 ? limit * Math.tanh(magnitude / limit) / magnitude : 1;
-        const centerFade = 1 - 0.29 * smoothstep(shape.h * 0.14, shape.h * 0.38, -surface.distance);
-        const analyticX = rawX * compression * centerFade;
-        const analyticY = rawY * compression * centerFade;
+        const rimFade = smoothstep(0.35, 2.9, inset);
+        const centerFalloff = 1 - 0.50 * smoothstep(shape.h * 0.17, shape.h * 0.40, inset);
+        const lensGain = rimFade * centerFalloff;
+        const ringWidth = shape.h < 80 ? 14 : 21;
+        const bell = smoothstep(0.3, 5.0, inset) * (1 - smoothstep(ringWidth * 0.58, ringWidth * 1.3, inset));
+        const meniscusShift = (shape.h < 80 ? 1.15 : 2.3) * bell;
+        const analyticX = rawX * compression * lensGain + surface.edgeNormal[0] * meniscusShift;
+        const analyticY = rawY * compression * lensGain + surface.edgeNormal[1] * meniscusShift;
         if (!traced) return [analyticX, analyticY];
         const dx = traced[0] - x;
         const dy = traced[1] - y;
         const mismatch = Math.hypot(dx - analyticX, dy - analyticY);
-        const trust = 0.12 * (1 - smoothstep(1.6, 5.6, mismatch));
+        const trust = 0.09 * (1 - smoothstep(1.8, 5.1, mismatch));
         return [analyticX + (dx - analyticX) * trust,
           analyticY + (dy - analyticY) * trust];
       }
 
       function prepareOptics(shape) {
-        const columns = Math.ceil(shape.w * 1.25) + 1;
-        const rows = Math.ceil(shape.h * 1.25) + 1;
+        const columns = Math.ceil(shape.w * 1.18) + 1;
+        const rows = Math.ceil(shape.h * 1.18) + 1;
         const stepX = shape.w / (columns - 1);
         const stepY = shape.h / (rows - 1);
         const values = new Float32Array(columns * rows * 6);
@@ -588,7 +594,7 @@
           + (srgbLinear[input[i01]] * (1 - u) + srgbLinear[input[i11]] * u) * v;
       }
 
-      function opticalColor(shape, x, y, input, edgeDistance) {
+      function opticalColor(shape, x, y, input, edgeDistance, diffuseInput) {
         const optics = shape.optics;
         let localX = x - shape.x;
         let localY = y - shape.y;
@@ -667,10 +673,35 @@
         const red = sampleLinearChannel(x + shiftedRedX * refractScale, y + shiftedRedY * refractScale, input, 0);
         const green = sampleLinearChannel(x + centerX * refractScale, y + centerY * refractScale, input, 1);
         const blue = sampleLinearChannel(x + shiftedBlueX * refractScale, y + shiftedBlueY * refractScale, input, 2);
+        let outR = red;
+        let outG = green;
+        let outB = blue;
+        const diffuseAmount = 0.085 * smoothstep(2.5, shape.h < 80 ? 10 : 16, -edgeDistance);
+        if (diffuseAmount > 0.002) {
+          const srcX = x + centerX * refractScale;
+          const srcY = y + centerY * refractScale;
+          if (diffuseInput) {
+            const bx = clamp(Math.round(srcX * scaleX - 0.5), 0, rasterWidth - 1);
+            const by = clamp(Math.round(srcY * scaleY - 0.5), 0, rasterHeight - 1);
+            const index = (by * rasterWidth + bx) * 4;
+            outR += (srgbLinear[diffuseInput[index]] - outR) * diffuseAmount;
+            outG += (srgbLinear[diffuseInput[index + 1]] - outG) * diffuseAmount;
+            outB += (srgbLinear[diffuseInput[index + 2]] - outB) * diffuseAmount;
+          } else {
+            outR += (0.5 * (sampleLinearChannel(srcX - 1.7, srcY - 1.3, input, 0)
+              + sampleLinearChannel(srcX + 1.7, srcY + 1.3, input, 0)) - outR) * diffuseAmount;
+            outG += (0.5 * (sampleLinearChannel(srcX - 1.7, srcY - 1.3, input, 1)
+              + sampleLinearChannel(srcX + 1.7, srcY + 1.3, input, 1)) - outG) * diffuseAmount;
+            outB += (0.5 * (sampleLinearChannel(srcX - 1.7, srcY - 1.3, input, 2)
+              + sampleLinearChannel(srcX + 1.7, srcY + 1.3, input, 2)) - outB) * diffuseAmount;
+          }
+        }
+        const luminance = outR * 0.2126 + outG * 0.7152 + outB * 0.0722;
+        const adaptive = 1.09 - 0.36 * Math.sqrt(Math.max(0, luminance));
         return pack(
-          encodeLinear(red * transmission + lightR),
-          encodeLinear(green * transmission + lightG),
-          encodeLinear(blue * transmission + lightB)
+          encodeLinear(outR * transmission + lightR * adaptive),
+          encodeLinear(outG * transmission + lightG * adaptive),
+          encodeLinear(outB * transmission + lightB * adaptive)
         );
       }
 
@@ -762,6 +793,43 @@
         }
       }
 
+      function prepareDiffuseBackdrop() {
+        const w = rasterWidth;
+        const h = rasterHeight;
+        const backdropBytes = new Uint8Array(backdrop.buffer);
+        const kernel = [1, 3, 4, 3, 1];
+        const intermediate = new Uint8Array(w * h * 4);
+        for (let y = 0; y < h; y++) {
+          const line = y * w * 4;
+          for (let x = 0; x < w; x++) {
+            const i = line + x * 4;
+            for (let c = 0; c < 3; c++) {
+              let sum = 0;
+              for (let k = -2; k <= 2; k++) {
+                const p = clamp(x + k, 0, w - 1);
+                sum += backdropBytes[line + p * 4 + c] * kernel[k + 2];
+              }
+              intermediate[i + c] = (sum / 12 + 0.5) | 0;
+            }
+            intermediate[i + 3] = 255;
+          }
+        }
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4;
+            for (let c = 0; c < 3; c++) {
+              let sum = 0;
+              for (let k = -2; k <= 2; k++) {
+                const p = clamp(y + k, 0, h - 1);
+                sum += intermediate[(p * w + x) * 4 + c] * kernel[k + 2];
+              }
+              diffuseBackdropBytes[i + c] = (sum / 12 + 0.5) | 0;
+            }
+            diffuseBackdropBytes[i + 3] = 255;
+          }
+        }
+      }
+
       function copyRegion(target, source, area) {
         for (let y = area.y0; y < area.y1; y++) {
           const start = y * rasterWidth + area.x0;
@@ -776,6 +844,30 @@
         const x1 = clamp(Math.ceil((shape.x + shape.w + margin) * scaleX), 0, rasterWidth);
         const y1 = clamp(Math.ceil((shape.y + shape.h + margin) * scaleY), 0, rasterHeight);
         return x1 > x0 && y1 > y0 ? { x0, y0, x1, y1 } : null;
+      }
+
+      function applySoftShadow(shape, dirty, output) {
+        const pad = shape.h < 80 ? 13 : 17;
+        const left = Math.max(dirty.x0, Math.floor((shape.x - pad) * scaleX));
+        const top = Math.max(dirty.y0, Math.floor((shape.y - pad) * scaleY));
+        const right = Math.min(dirty.x1, Math.ceil((shape.x + shape.w + pad) * scaleX));
+        const bottom = Math.min(dirty.y1, Math.ceil((shape.y + shape.h + pad) * scaleY));
+        const invX = 1 / scaleX;
+        const invY = 1 / scaleY;
+        for (let py = top; py < bottom; py++) {
+          const y = (py + 0.5) * invY;
+          for (let px = left; px < right; px++) {
+            const x = (px + 0.5) * invX;
+            const d = distanceToShape(x - 1.2, y - 3.1, shape);
+            if (d < -0.4 || d > 15) continue;
+            const occlusion = 0.10 * Math.exp(-d * d / 42) * smoothstep(-0.4, 1.5, d);
+            if (occlusion < 0.001) continue;
+            const i = (py * rasterWidth + px) * 4;
+            output[i] = Math.round(output[i] * (1 - occlusion));
+            output[i + 1] = Math.round(output[i + 1] * (1 - occlusion));
+            output[i + 2] = Math.round(output[i + 2] * (1 - occlusion));
+          }
+        }
       }
 
       function applyCaustic(shape, dirty, output) {
@@ -825,7 +917,7 @@
         }
       }
 
-      function paintShape(shape, dirty, input, output) {
+      function paintShape(shape, dirty, input, output, diffuseInput) {
         const area = bounds(shape);
         if (!area) return;
 
@@ -851,7 +943,7 @@
               : signed > -8 && !fineRaster ? 2 : 1;
             if (activeMotion && samples > 2) samples = 2;
             if (samples === 1) {
-              const color = opticalColor(shape, cx, cy, input, signed);
+              const color = opticalColor(shape, cx, cy, input, signed, diffuseInput);
               const outIndex = (py * rasterWidth + px) * 4;
               output[outIndex] = LITTLE_ENDIAN ? color & 255 : color >>> 24;
               output[outIndex + 1] = LITTLE_ENDIAN ? (color >>> 8) & 255 : (color >>> 16) & 255;
@@ -873,7 +965,7 @@
                 const distance = distanceToShape(x, y, shape);
                 if (distance >= 0) continue;
                 covered++;
-                const color = opticalColor(shape, x, y, input, distance);
+                const color = opticalColor(shape, x, y, input, distance, diffuseInput);
                 totalR += LITTLE_ENDIAN ? color & 255 : color >>> 24;
                 totalG += LITTLE_ENDIAN ? (color >>> 8) & 255 : (color >>> 16) & 255;
                 totalB += LITTLE_ENDIAN ? (color >>> 16) & 255 : (color >>> 8) & 255;
@@ -922,16 +1014,18 @@
         const sceneRegions = mergeRectangles(sceneDirty);
         for (const area of sceneRegions) {
           copyRegion(litBackdropPixels, backdrop, area);
+          applySoftShadow(shapes[0], area, litBackdropBytes);
           applyCaustic(shapes[0], area, litBackdropBytes);
           copyRegion(containerPixels, litBackdropPixels, area);
-          paintShape(shapes[0], area, litBackdropBytes, containerBytes);
+          paintShape(shapes[0], area, litBackdropBytes, containerBytes, diffuseBackdropBytes);
         }
 
         for (const area of mergeRectangles([...sceneRegions, ...pillDirty])) {
           copyRegion(litContainerPixels, containerPixels, area);
+          applySoftShadow(shapes[1], area, litContainerBytes);
           applyCaustic(shapes[1], area, litContainerBytes);
           copyRegion(pixels, litContainerPixels, area);
-          paintShape(shapes[1], area, litContainerBytes, bytes);
+          paintShape(shapes[1], area, litContainerBytes, bytes, null);
           context.putImageData(framebuffer, 0, 0,
             area.x0, area.y0, area.x1 - area.x0, area.y1 - area.y0);
         }
@@ -1024,6 +1118,8 @@
         bytes = framebuffer.data;
         pixels = new Uint32Array(bytes.buffer);
         backdrop = new Uint32Array(rasterWidth * rasterHeight);
+        diffuseBackdrop = new Uint32Array(rasterWidth * rasterHeight);
+        diffuseBackdropBytes = new Uint8Array(diffuseBackdrop.buffer);
         litBackdropPixels = new Uint32Array(rasterWidth * rasterHeight);
         litBackdropBytes = new Uint8Array(litBackdropPixels.buffer);
         containerPixels = new Uint32Array(rasterWidth * rasterHeight);
@@ -1031,6 +1127,7 @@
         litContainerPixels = new Uint32Array(rasterWidth * rasterHeight);
         litContainerBytes = new Uint8Array(litContainerPixels.buffer);
         prepareBackdrop();
+        prepareDiffuseBackdrop();
 
         const previous = initialized ? shapes.map(shape => ({
           x: shape.x,
@@ -1065,8 +1162,10 @@
           const freeX = Math.max(0, viewportWidth - shape.w);
           const freeY = Math.max(0, viewportHeight - shape.h);
           if (previous) {
-            shape.x = previous[i].freeX > 0 ? previous[i].x / previous[i].freeX * freeX : freeX * 0.5;
-            shape.y = previous[i].freeY > 0 ? previous[i].y / previous[i].freeY * freeY : freeY * 0.5;
+            shape.x = previous[i].freeX === freeX ? previous[i].x
+              : previous[i].freeX > 0 ? previous[i].x / previous[i].freeX * freeX : freeX * 0.5;
+            shape.y = previous[i].freeY === freeY ? previous[i].y
+              : previous[i].freeY > 0 ? previous[i].y / previous[i].freeY * freeY : freeY * 0.5;
           }
           shape.x = clamp(shape.x, 0, freeX);
           shape.y = clamp(shape.y, 0, freeY);
@@ -1169,13 +1268,19 @@
             height: image.height,
             data: new Uint8ClampedArray(image.data)
           };
-          if (backdrop) prepareBackdrop();
+          if (backdrop) {
+            prepareBackdrop();
+            prepareDiffuseBackdrop();
+          }
           fullRedraw = true;
           requestRender();
         },
         clearBackdrop() {
           backdropSource = null;
-          if (backdrop) prepareBackdrop();
+          if (backdrop) {
+            prepareBackdrop();
+            prepareDiffuseBackdrop();
+          }
           fullRedraw = true;
           requestRender();
         }
