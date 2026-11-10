@@ -37,6 +37,8 @@
 
       const MAX_PIXELS = 2_400_000;
       const MAX_DENSITY = 1.85;
+      const MOTION_RESPONSE = 25;
+      const MAX_VISUAL_LAG = 16;
       const IOR = 1.49;
       const SPECTRAL_IOR = [1.486, IOR, 1.496];
       const BACKDROP_Z = -48;
@@ -87,6 +89,7 @@
       let initialized = false;
       let fullRedraw = true;
       let frameRequested = false;
+      let lastFrameTime = null;
       let drag = null;
       let backdropSource = null;
 
@@ -679,6 +682,16 @@
 
             const samples = signed > -halfDiagonal ? (fineRaster ? 2 : 4)
               : signed > -8 && !fineRaster ? 2 : 1;
+            if (samples === 1) {
+              const color = opticalColor(shape, cx, cy, input, signed);
+              const outIndex = (py * rasterWidth + px) * 4;
+              output[outIndex] = LITTLE_ENDIAN ? color & 255 : color >>> 24;
+              output[outIndex + 1] = LITTLE_ENDIAN ? (color >>> 8) & 255 : (color >>> 16) & 255;
+              output[outIndex + 2] = LITTLE_ENDIAN ? (color >>> 16) & 255 : (color >>> 8) & 255;
+              output[outIndex + 3] = 255;
+              continue;
+            }
+
             const count = samples * samples;
             let totalR = 0;
             let totalG = 0;
@@ -711,29 +724,40 @@
         }
       }
 
+      function changed(shape) {
+        const old = shape.drawn;
+        return !old || old.x !== shape.x || old.y !== shape.y
+          || old.w !== shape.w || old.h !== shape.h;
+      }
+
       function render() {
         frameRequested = false;
         if (!framebuffer) return;
 
-        const dirty = [];
+        const sceneDirty = [];
+        const pillDirty = [];
         if (fullRedraw) {
-          dirty.push({ x0: 0, y0: 0, x1: rasterWidth, y1: rasterHeight });
+          sceneDirty.push({ x0: 0, y0: 0, x1: rasterWidth, y1: rasterHeight });
         } else {
-          for (const shape of shapes) {
-            const old = shape.drawn;
-            if (!old || old.x !== shape.x || old.y !== shape.y
-              || old.w !== shape.w || old.h !== shape.h) {
-              if (old) dirty.push(affectedBounds(old));
-              dirty.push(affectedBounds(shape));
-            }
+          if (changed(shapes[0])) {
+            if (shapes[0].drawn) sceneDirty.push(affectedBounds(shapes[0].drawn));
+            sceneDirty.push(affectedBounds(shapes[0]));
+          }
+          if (changed(shapes[1])) {
+            if (shapes[1].drawn) pillDirty.push(affectedBounds(shapes[1].drawn));
+            pillDirty.push(affectedBounds(shapes[1]));
           }
         }
 
-        for (const area of mergeRectangles(dirty)) {
+        const sceneRegions = mergeRectangles(sceneDirty);
+        for (const area of sceneRegions) {
           copyRegion(litBackdropPixels, backdrop, area);
           applyCaustic(shapes[0], area, litBackdropBytes);
           copyRegion(containerPixels, litBackdropPixels, area);
           paintShape(shapes[0], area, litBackdropBytes, containerBytes);
+        }
+
+        for (const area of mergeRectangles([...sceneRegions, ...pillDirty])) {
           copyRegion(litContainerPixels, containerPixels, area);
           applyCaustic(shapes[1], area, litContainerBytes);
           copyRegion(pixels, litContainerPixels, area);
@@ -746,10 +770,47 @@
         fullRedraw = false;
       }
 
+      function advanceMotion(time) {
+        const dt = lastFrameTime === null ? 16.667 : clamp(time - lastFrameTime, 1, 48);
+        lastFrameTime = time;
+        const response = 1 - Math.exp(-dt / MOTION_RESPONSE);
+        let moving = false;
+        for (const shape of shapes) {
+          const dx = shape.targetX - shape.x;
+          const dy = shape.targetY - shape.y;
+          if (Math.abs(dx) + Math.abs(dy) < 0.075) {
+            shape.x = shape.targetX;
+            shape.y = shape.targetY;
+            continue;
+          }
+          let nextX = shape.x + dx * response;
+          let nextY = shape.y + dy * response;
+          const remainingX = shape.targetX - nextX;
+          const remainingY = shape.targetY - nextY;
+          const lag = Math.hypot(remainingX, remainingY);
+          if (lag > MAX_VISUAL_LAG) {
+            const ratio = MAX_VISUAL_LAG / lag;
+            nextX = shape.targetX - remainingX * ratio;
+            nextY = shape.targetY - remainingY * ratio;
+          }
+          shape.x = nextX;
+          shape.y = nextY;
+          moving = true;
+        }
+        return moving;
+      }
+
+      function tick(time) {
+        frameRequested = false;
+        const moving = advanceMotion(time);
+        render();
+        if (moving) requestRender();
+      }
+
       function requestRender() {
         if (frameRequested) return;
         frameRequested = true;
-        requestAnimationFrame(render);
+        requestAnimationFrame(tick);
       }
 
       function resize() {
@@ -815,10 +876,14 @@
           }
           shape.x = clamp(shape.x, 0, freeX);
           shape.y = clamp(shape.y, 0, freeY);
+          shape.targetX = shape.x;
+          shape.targetY = shape.y;
           prepareOptics(shape);
           shape.drawn = null;
         }
 
+        lastFrameTime = null;
+        drag = null;
         fullRedraw = true;
         requestRender();
       }
@@ -841,12 +906,15 @@
         const shape = hitTest(point.x, point.y);
         if (!shape) return;
 
+        shape.targetX = shape.x;
+        shape.targetY = shape.y;
         drag = {
           id: event.pointerId,
           shape,
           offsetX: point.x - shape.x,
           offsetY: point.y - shape.y
         };
+        lastFrameTime = null;
         canvas.setPointerCapture(event.pointerId);
         canvas.style.cursor = 'grabbing';
         event.preventDefault();
@@ -864,9 +932,9 @@
         const shape = drag.shape;
         const x = clamp(point.x - drag.offsetX, 0, Math.max(0, viewportWidth - shape.w));
         const y = clamp(point.y - drag.offsetY, 0, Math.max(0, viewportHeight - shape.h));
-        if (x !== shape.x || y !== shape.y) {
-          shape.x = x;
-          shape.y = y;
+        if (x !== shape.targetX || y !== shape.targetY) {
+          shape.targetX = x;
+          shape.targetY = y;
           requestRender();
         }
       });
@@ -882,7 +950,14 @@
       canvas.addEventListener('pointerup', release);
       canvas.addEventListener('pointercancel', release);
       canvas.addEventListener('lostpointercapture', release);
-      window.addEventListener('blur', () => { drag = null; canvas.style.cursor = 'default'; });
+      window.addEventListener('blur', () => {
+        drag = null;
+        for (const shape of shapes) {
+          shape.targetX = shape.x;
+          shape.targetY = shape.y;
+        }
+        canvas.style.cursor = 'default';
+      });
       window.LiquidGlass = Object.freeze({
         setBackdrop(image) {
           if (!image || !Number.isSafeInteger(image.width)
