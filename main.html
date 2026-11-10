@@ -422,7 +422,29 @@
             }
           }
         }
-        shape.caustic = { width, height, margin, energy: blurred };
+        const rowMin = new Int32Array(height).fill(width);
+        const rowMax = new Int32Array(height).fill(-1);
+        let minX = width;
+        let minY = height;
+        let maxX = -1;
+        let maxY = -1;
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const index = (y * width + x) * 3;
+            if (Math.max(Math.abs(blurred[index]), Math.abs(blurred[index + 1]),
+              Math.abs(blurred[index + 2])) < 0.0028) continue;
+            rowMin[y] = Math.min(rowMin[y], x);
+            rowMax[y] = x;
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+          }
+        }
+        shape.caustic = {
+          width, height, margin, energy: blurred, rowMin, rowMax,
+          active: maxX < 0 ? null : { minX, minY, maxX, maxY, margin }
+        };
       }
 
       function sampleLinearChannel(x, y, input, channel) {
@@ -472,7 +494,7 @@
         let lightR;
         let lightG;
         let lightB;
-        if (edgeDistance > -7) {
+        if (edgeDistance > -1.5) {
           const surface = sampleSurface(shape, x, y);
           if (!surface) return pack(0, 0, 0);
           const direct = surfaceResponse(shape, x, y, surface);
@@ -624,7 +646,7 @@
         const y0 = Math.max(dirty.y0, area.y0);
         const x1 = Math.min(dirty.x1, area.x1);
         const y1 = Math.min(dirty.y1, area.y1);
-        const { width, height, margin, energy } = map;
+        const { width, height, margin, energy, rowMin, rowMax } = map;
         const invX = 1 / scaleX;
         const invY = 1 / scaleY;
         for (let py = y0; py < y1; py++) {
@@ -632,7 +654,12 @@
           if (mapY < 0 || mapY >= height - 1) continue;
           const top = Math.floor(mapY);
           const v = mapY - top;
-          for (let px = x0; px < x1; px++) {
+          const first = Math.min(rowMin[top], rowMin[top + 1]);
+          const last = Math.max(rowMax[top], rowMax[top + 1]);
+          if (last < first) continue;
+          const rowStart = Math.max(x0, Math.floor((shape.x + first - margin - 2) * scaleX));
+          const rowEnd = Math.min(x1, Math.ceil((shape.x + last - margin + 2) * scaleX));
+          for (let px = rowStart; px < rowEnd; px++) {
             const mapX = (px + 0.5) * invX - shape.x + margin;
             if (mapX < 0 || mapX >= width - 1) continue;
             const left = Math.floor(mapX);
