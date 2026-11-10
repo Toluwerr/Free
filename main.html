@@ -36,11 +36,11 @@
       if (!context) return;
 
       const MAX_PIXELS = 2_400_000;
-      const MAX_DENSITY = 1.85;
-      const MOTION_RESPONSE = 23;
-      const MAX_VISUAL_LAG = 14;
-      const LIQUID_FREQUENCY = 15;
-      const LIQUID_DAMPING = 0.42;
+      const MAX_DENSITY = 1.7;
+      const MOTION_RESPONSE = 20;
+      const MAX_VISUAL_LAG = 11;
+      const LIQUID_FREQUENCY = 17;
+      const LIQUID_DAMPING = 0.5;
       const IOR = 1.49;
       const SPECTRAL_IOR = [1.486, IOR, 1.496];
       const BACKDROP_Z = -48;
@@ -66,8 +66,8 @@
         : ((r << 24) | (g << 16) | (b << 8) | 255) >>> 0;
 
       const shapes = [
-        { x: 0, y: 0, w: 340, h: 220, radius: 45, radiusMax: 45, shoulder: 55, depth: 7.8, crown: 15.5, waveX: 0, waveY: 0, waveVX: 0, waveVY: 0, drawn: null },
-        { x: 0, y: 0, w: 144, h: 48, radius: 24, radiusMax: 24, shoulder: 23, depth: 6.1, crown: 4.6, waveX: 0, waveY: 0, waveVX: 0, waveVY: 0, drawn: null }
+        { x: 0, y: 0, w: 340, h: 220, radius: 45, radiusMax: 45, shoulder: 58, depth: 8.6, crown: 18.5, waveX: 0, waveY: 0, waveVX: 0, waveVY: 0, drawn: null },
+        { x: 0, y: 0, w: 144, h: 48, radius: 24, radiusMax: 24, shoulder: 24, depth: 6.7, crown: 5.4, waveX: 0, waveY: 0, waveVX: 0, waveVY: 0, drawn: null }
       ];
 
       let viewportWidth = 1;
@@ -94,6 +94,7 @@
       let lastFrameTime = null;
       let drag = null;
       let backdropSource = null;
+      let activeMotion = false;
 
       function distanceToShape(x, y, shape) {
         const hx = shape.w * 0.5;
@@ -269,22 +270,24 @@
         const rx = 2 * nz * nx;
         const ry = 2 * nz * ny;
         const rz = 2 * nz * nz - 1;
-        const band = 1 - smoothstep(0.105, 0.285, Math.abs(ry + 0.64 + rx * 0.26));
-        const topLight = band * smoothstep(-1.1, -0.84, rx) * (1 - smoothstep(0.16, 0.62, rx));
-        const sideLight = (1 - smoothstep(0.13, 0.32, Math.abs(rx - 0.79 + ry * 0.1)))
-          * smoothstep(-0.65, -0.30, ry) * (1 - smoothstep(0.55, 0.90, ry));
-        const lowerLight = (1 - smoothstep(0.085, 0.24, Math.abs(ry - 0.81 + rx * 0.22)))
-          * smoothstep(-0.75, -0.36, rx) * (1 - smoothstep(0.45, 0.86, rx));
-        const sky = 0.10 + 0.12 * smoothstep(-0.9, 0.5, -ry) + 0.055 * Math.max(0, rz);
-        const main = 1.55 * topLight + 0.93 * sideLight + 0.48 * lowerLight;
-        return reflectance * (sky + main);
+        const dome = 0.022 + 0.095 * smoothstep(-0.95, 0.2, -ry) + 0.05 * Math.max(0, rz);
+        const horizon = (1 - smoothstep(0.05, 0.18, Math.abs(ry + 0.06))) * (0.22 + 0.78 * smoothstep(-0.75, 0.35, rz));
+        const topRibbon = (1 - smoothstep(0.015, 0.09, Math.abs(ry + 0.79 - rx * 0.08)))
+          * smoothstep(-1.02, -0.48, rx) * (1 - smoothstep(0.28, 0.92, rx));
+        const leftRibbon = (1 - smoothstep(0.02, 0.12, Math.abs(rx + 0.74 + ry * 0.16)))
+          * smoothstep(-0.92, -0.3, ry) * (1 - smoothstep(0.2, 0.88, ry));
+        const rightRibbon = (1 - smoothstep(0.025, 0.135, Math.abs(rx - 0.82 + ry * 0.12)))
+          * smoothstep(-0.88, -0.22, ry) * (1 - smoothstep(0.08, 0.86, ry));
+        const base = dome + horizon * 0.18;
+        const ribbons = topRibbon * 1.8 + leftRibbon * 1.1 + rightRibbon * 1.0;
+        return reflectance * (base + ribbons);
       }
 
       function surfaceResponse(shape, x, y, surface) {
         const inset = -surface.distance;
-        const rimWidth = Math.min(9.5, shape.h * 0.22, shape.radius * 0.33);
+        const rimWidth = Math.min(10.5, shape.h * 0.24, shape.radius * 0.34);
         const rim = 1 - smoothstep(0, rimWidth, inset);
-        const edgeZ = 1 - rim * 0.985;
+        const edgeZ = 1 - rim * 0.988;
         const edgeXY = Math.sqrt(Math.max(0, 1 - edgeZ * edgeZ));
         const nx = surface.frontNormal[0] * (1 - rim) + surface.edgeNormal[0] * edgeXY;
         const ny = surface.frontNormal[1] * (1 - rim) + surface.edgeNormal[1] * edgeXY;
@@ -294,17 +297,20 @@
         const oy = ny / length;
         const oz = nz / length;
         const reflectance = F0 + (1 - F0) * (1 - oz) ** 5;
-        const attenuation = Math.exp(-surface.thickness * 0.0016);
+        const attenuation = Math.exp(-surface.thickness * 0.00115);
         const key = microfacet(ox, oy, oz, -0.38, -0.46, 0.802);
         const fill = microfacet(ox, oy, oz, 0.62, 0.13, 0.773);
+        const kick = microfacet(ox, oy, oz, 0.08, -0.96, 0.265);
         const environment = environmentRadiance(ox, oy, oz, reflectance);
-        const highlight = key * 1.18 + fill * 0.41;
-        const inner = smoothstep(0, 3.5, inset) * (1 - smoothstep(12, 31, inset));
-        const dispersion = (Math.abs(surface.meridianCurvature) + Math.abs(surface.transverseCurvature)) * 0.075;
+        const highlight = key * 1.2 + fill * 0.45 + kick * 0.32;
+        const meniscus = smoothstep(0.6, 5.5, inset) * (1 - smoothstep(9.5, 26, inset));
+        const core = smoothstep(8, 24, inset) * smoothstep(0.92, 0.995, oz);
+        const dispersion = (Math.abs(surface.meridianCurvature) + Math.abs(surface.transverseCurvature)) * 0.065;
+        const rimSheen = rim * (0.32 + 0.68 * (1 - oz));
         return [reflectance, attenuation,
-          environment * 0.88 + highlight * 1.07 + inner * dispersion * 0.64,
-          environment * 0.96 + highlight * 1.12 + inner * dispersion * 0.72,
-          environment * 1.06 + highlight * 1.24 + inner * dispersion * 0.85];
+          environment * 0.82 + highlight * 1.02 + rimSheen * 0.36 + meniscus * (0.18 + dispersion * 0.55) + core * 0.028,
+          environment * 0.9 + highlight * 1.08 + rimSheen * 0.42 + meniscus * (0.22 + dispersion * 0.64) + core * 0.034,
+          environment * 1.0 + highlight * 1.17 + rimSheen * 0.5 + meniscus * (0.27 + dispersion * 0.76) + core * 0.042];
       }
 
       function prepareOptics(shape) {
@@ -529,7 +535,7 @@
         const b = (y0 * optics.columns + x1) * 6;
         const c = (y1 * optics.columns + x0) * 6;
         const d = (y1 * optics.columns + x1) * 6;
-        const edgeFade = smoothstep(0, 1.15, -edgeDistance);
+        const edgeFade = smoothstep(0, 1.45, -edgeDistance);
         const lighting = optics.lighting;
         const ia = (y0 * optics.columns + x0) * 5;
         const ib = (y0 * optics.columns + x1) * 5;
@@ -570,14 +576,16 @@
         const redY = values[a + 1] * w00 + values[b + 1] * w10 + values[c + 1] * w01 + values[d + 1] * w11;
         const blueX = values[a + 4] * w00 + values[b + 4] * w10 + values[c + 4] * w01 + values[d + 4] * w11;
         const blueY = values[a + 5] * w00 + values[b + 5] * w10 + values[c + 5] * w01 + values[d + 5] * w11;
-        const transmission = (1 - reflectance) * attenuation;
-        const red = sampleLinearChannel(x + redX * edgeFade, y + redY * edgeFade, input, 0);
-        const green = sampleLinearChannel(x + centerX * edgeFade, y + centerY * edgeFade, input, 1);
-        const blue = sampleLinearChannel(x + blueX * edgeFade, y + blueY * edgeFade, input, 2);
+        const bodyBoost = smoothstep(3.5, 20, -edgeDistance) * 0.09;
+        const refractScale = edgeFade * (1 + bodyBoost);
+        const transmission = (1 - reflectance * 0.92) * attenuation;
+        const red = sampleLinearChannel(x + redX * refractScale, y + redY * refractScale, input, 0);
+        const green = sampleLinearChannel(x + centerX * refractScale, y + centerY * refractScale, input, 1);
+        const blue = sampleLinearChannel(x + blueX * refractScale, y + blueY * refractScale, input, 2);
         return pack(
-          encodeLinear(red * transmission + reflectance * 0.032 + lightR),
-          encodeLinear(green * transmission + reflectance * 0.040 + lightG),
-          encodeLinear(blue * transmission + reflectance * 0.051 + lightB)
+          encodeLinear(red * transmission + reflectance * 0.042 + lightR),
+          encodeLinear(green * transmission + reflectance * 0.052 + lightG),
+          encodeLinear(blue * transmission + reflectance * 0.066 + lightB)
         );
       }
 
@@ -630,11 +638,11 @@
               const b = sy * 0.88 - sx * 0.19;
               const major = Math.abs(a - Math.round(a / 78) * 78);
               const minor = Math.abs(b - Math.round(b / 126) * 126);
-              const stroke = 15 * clamp((1.8 - major) / 1.25, 0, 1)
-                + 6 * clamp((1.2 - minor) / 0.9, 0, 1);
-              const low = 4.4 * Math.sin(a / 170) + 3.1 * Math.sin(b / 114);
-              const value = Math.round(25 + low + stroke);
-              backdrop[y * rasterWidth + x] = pack(value, value + 1, value + 3);
+              const stroke = 18 * clamp((1.8 - major) / 1.25, 0, 1)
+                + 7 * clamp((1.2 - minor) / 0.9, 0, 1);
+              const low = 8 + 10 * (1 - sy / viewportHeight) + 5.5 * Math.sin(a / 170) + 3.6 * Math.sin(b / 114);
+              const value = Math.round(18 + low + stroke);
+              backdrop[y * rasterWidth + x] = pack(value, value + 2, value + 6);
             }
           }
           return;
@@ -745,7 +753,7 @@
         const halfDiagonal = 0.5 * Math.hypot(1 / scaleX, 1 / scaleY);
         const reciprocalX = 1 / scaleX;
         const reciprocalY = 1 / scaleY;
-        const fineRaster = Math.min(scaleX, scaleY) >= 1.45;
+        const fineRaster = Math.min(scaleX, scaleY) >= 1.45 && !activeMotion;
 
         for (let py = y0; py < y1; py++) {
           const cy = (py + 0.5) * reciprocalY;
@@ -754,8 +762,9 @@
             const signed = distanceToShape(cx, cy, shape);
             if (signed >= halfDiagonal) continue;
 
-            const samples = signed > -halfDiagonal ? (fineRaster ? 2 : 4)
+            let samples = signed > -halfDiagonal ? (fineRaster ? 2 : 4)
               : signed > -8 && !fineRaster ? 2 : 1;
+            if (activeMotion && samples > 2) samples = 2;
             if (samples === 1) {
               const color = opticalColor(shape, cx, cy, input, signed);
               const outIndex = (py * rasterWidth + px) * 4;
@@ -880,12 +889,12 @@
           const motionY = nextY - shape.y;
           shape.x = nextX;
           shape.y = nextY;
-          const wantedX = clamp((motionX / Math.max(1, dt)) * 30, -5.5, 5.5);
-          const wantedY = clamp((motionY / Math.max(1, dt)) * 30, -5.5, 5.5);
+          const wantedX = clamp((motionX / Math.max(1, dt)) * 24, -4.4, 4.4);
+          const wantedY = clamp((motionY / Math.max(1, dt)) * 24, -4.4, 4.4);
           shape.waveVX += ((wantedX - shape.waveX) * stiffness - shape.waveVX * friction) * step;
           shape.waveVY += ((wantedY - shape.waveY) * stiffness - shape.waveVY * friction) * step;
-          shape.waveX = clamp(shape.waveX + shape.waveVX * step, -6.5, 6.5);
-          shape.waveY = clamp(shape.waveY + shape.waveVY * step, -6.5, 6.5);
+          shape.waveX = clamp(shape.waveX + shape.waveVX * step, -4.8, 4.8);
+          shape.waveY = clamp(shape.waveY + shape.waveVY * step, -4.8, 4.8);
           if (Math.abs(shape.waveX) + Math.abs(shape.waveY) > 0.035
             || Math.abs(shape.waveVX) + Math.abs(shape.waveVY) > 0.2) moving = true;
           else {
@@ -901,7 +910,9 @@
       function tick(time) {
         frameRequested = false;
         const moving = advanceMotion(time);
+        activeMotion = moving || !!drag;
         render();
+        activeMotion = false;
         if (moving) requestRender();
       }
 
