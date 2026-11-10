@@ -44,7 +44,7 @@
       const IOR = 1.49;
       const SPECTRAL_IOR = [1.488, IOR, 1.492];
       const BACKDROP_Z = -48;
-      const CAUSTIC_IRRADIANCE = 0.00145;
+      const CAUSTIC_IRRADIANCE = 0.0011;
       const F0 = Math.pow((IOR - 1) / (IOR + 1), 2);
       const COLOR_STEPS = 8192;
       const srgbLinear = new Float32Array(256);
@@ -66,8 +66,8 @@
         : ((r << 24) | (g << 16) | (b << 8) | 255) >>> 0;
 
       const shapes = [
-        { x: 0, y: 0, w: 340, h: 220, radius: 45, radiusMax: 45, shoulder: 58, depth: 8.6, crown: 18.5, waveX: 0, waveY: 0, waveVX: 0, waveVY: 0, drawn: null },
-        { x: 0, y: 0, w: 144, h: 48, radius: 24, radiusMax: 24, shoulder: 24, depth: 6.7, crown: 5.8, waveX: 0, waveY: 0, waveVX: 0, waveVY: 0, drawn: null }
+        { x: 0, y: 0, w: 340, h: 220, radius: 45, radiusMax: 45, shoulder: 46, depth: 8.9, crown: 11.4, waveX: 0, waveY: 0, waveVX: 0, waveVY: 0, drawn: null },
+        { x: 0, y: 0, w: 144, h: 48, radius: 24, radiusMax: 24, shoulder: 16.5, depth: 6.8, crown: 3.4, waveX: 0, waveY: 0, waveVX: 0, waveVY: 0, drawn: null }
       ];
 
       let viewportWidth = 1;
@@ -270,24 +270,22 @@
         const rx = 2 * nz * nx;
         const ry = 2 * nz * ny;
         const rz = 2 * nz * nz - 1;
-        const dome = 0.022 + 0.095 * smoothstep(-0.95, 0.2, -ry) + 0.05 * Math.max(0, rz);
-        const horizon = (1 - smoothstep(0.05, 0.18, Math.abs(ry + 0.06))) * (0.22 + 0.78 * smoothstep(-0.75, 0.35, rz));
-        const topRibbon = (1 - smoothstep(0.015, 0.09, Math.abs(ry + 0.79 - rx * 0.08)))
-          * smoothstep(-1.02, -0.48, rx) * (1 - smoothstep(0.28, 0.92, rx));
-        const leftRibbon = (1 - smoothstep(0.02, 0.12, Math.abs(rx + 0.74 + ry * 0.16)))
-          * smoothstep(-0.92, -0.3, ry) * (1 - smoothstep(0.2, 0.88, ry));
-        const rightRibbon = (1 - smoothstep(0.025, 0.135, Math.abs(rx - 0.82 + ry * 0.12)))
-          * smoothstep(-0.88, -0.22, ry) * (1 - smoothstep(0.08, 0.86, ry));
-        const base = dome + horizon * 0.18;
-        const ribbons = topRibbon * 1.8 + leftRibbon * 1.1 + rightRibbon * 1.0;
-        return reflectance * (base + ribbons);
+        const upper = smoothstep(-0.85, -0.1, -ry) * 0.1;
+        const softbox = (1 - smoothstep(0.08, 0.26, Math.abs(ry + 0.71 + rx * 0.09)))
+          * smoothstep(-0.95, -0.35, rx) * (1 - smoothstep(0.32, 0.96, rx));
+        const side = (1 - smoothstep(0.045, 0.22, Math.abs(rx + 0.80 + ry * 0.12)))
+          * (1 - smoothstep(0.1, 0.95, ry));
+        const fill = (1 - smoothstep(0.07, 0.31, Math.abs(rx - 0.82 - ry * 0.07)))
+          * smoothstep(-0.9, -0.2, ry);
+        const horizon = 0.055 * (1 - smoothstep(0.12, 0.47, Math.abs(ry + 0.03)));
+        return reflectance * (0.07 + upper + horizon + 1.35 * softbox + 0.59 * side + 0.4 * fill + 0.07 * Math.max(0,rz));
       }
 
       function surfaceResponse(shape, x, y, surface) {
         const inset = -surface.distance;
-        const rimWidth = Math.min(6.2, shape.h * 0.12, shape.radius * 0.22);
+        const rimWidth = Math.min(5.3, shape.h * 0.115, shape.radius * 0.2);
         const rim = 1 - smoothstep(0, rimWidth, inset);
-        const edgeZ = 1 - rim * 0.985;
+        const edgeZ = 1 - rim * 0.982;
         const edgeXY = Math.sqrt(Math.max(0, 1 - edgeZ * edgeZ));
         const nx = surface.frontNormal[0] * (1 - rim) + surface.edgeNormal[0] * edgeXY;
         const ny = surface.frontNormal[1] * (1 - rim) + surface.edgeNormal[1] * edgeXY;
@@ -302,36 +300,37 @@
         const fill = microfacet(ox, oy, oz, 0.62, 0.13, 0.773);
         const kick = microfacet(ox, oy, oz, 0.08, -0.96, 0.265);
         const environment = environmentRadiance(ox, oy, oz, reflectance);
-        const direction = clamp(0.5 - surface.edgeNormal[1] * 0.43 - surface.edgeNormal[0] * 0.15, 0, 1);
-        const outerSheen = rim * rim * (0.009 + 0.043 * direction);
-        const meniscus = smoothstep(1.2, 3.6, inset) * (1 - smoothstep(6.5, 13.0, inset));
-        const innerSheen = meniscus * (0.005 + 0.018 * direction);
-        const grazing = smoothstep(0.14, 0.75, 1 - oz) * (1 - smoothstep(8, 22, inset));
-        const specular = Math.min(0.12, key * 0.52 + fill * 0.16 + kick * 0.12);
-        const volume = (1 - rim * rim) * (0.0028 + 0.0036 * smoothstep(6, 23, inset));
-        const light = Math.min(0.14, environment * 0.41) + specular + outerSheen + innerSheen
-          + grazing * 0.008 + volume;
+        const direction = clamp(0.51 - surface.edgeNormal[1] * 0.39 - surface.edgeNormal[0] * 0.17, 0, 1);
+        const outerSheen = rim * rim * (0.003 + 0.036 * direction);
+        const innerRidge = smoothstep(1.6, 3.3, inset) * (1 - smoothstep(5.0, 10.5, inset));
+        const innerSheen = innerRidge * (0.0025 + 0.0125 * direction);
+        const grazing = smoothstep(0.15, 0.75, 1 - oz) * (1 - smoothstep(7, 17, inset));
+        const specular = Math.min(0.095, key * 0.47 + fill * 0.13 + kick * 0.095);
+        const volume = 0.0027 * (1 - rim) * (1 - rim);
+        const light = Math.min(0.1, environment * 0.37) + specular + outerSheen + innerSheen
+          + grazing * 0.005 + volume;
         return [reflectance, attenuation,
-          light * 0.95, light * 0.99, light * 1.045];
+          light * 0.955, light * 0.992, light * 1.042];
       }
 
       function stableRayOffset(shape, surface, x, y, ior, traced) {
         const ratio = 1 - 1 / ior;
-        const reach = Math.abs(BACKDROP_Z) + surface.thickness * 0.30;
+        const reach = Math.abs(BACKDROP_Z) + surface.thickness * 0.19;
         const normalX = surface.frontNormal[0] / surface.frontNormal[2];
         const normalY = surface.frontNormal[1] / surface.frontNormal[2];
         const rawX = normalX * ratio * reach;
         const rawY = normalY * ratio * reach;
         const magnitude = Math.hypot(rawX, rawY);
-        const limit = shape.h < 80 ? 12 : 22;
+        const limit = shape.h < 80 ? 10 : 17;
         const compression = magnitude > 0.00001 ? limit * Math.tanh(magnitude / limit) / magnitude : 1;
-        const analyticX = rawX * compression;
-        const analyticY = rawY * compression;
+        const centerFade = 1 - 0.29 * smoothstep(shape.h * 0.14, shape.h * 0.38, -surface.distance);
+        const analyticX = rawX * compression * centerFade;
+        const analyticY = rawY * compression * centerFade;
         if (!traced) return [analyticX, analyticY];
         const dx = traced[0] - x;
         const dy = traced[1] - y;
         const mismatch = Math.hypot(dx - analyticX, dy - analyticY);
-        const trust = 0.28 * (1 - smoothstep(2.2, 8.2, mismatch));
+        const trust = 0.12 * (1 - smoothstep(1.6, 5.6, mismatch));
         return [analyticX + (dx - analyticX) * trust,
           analyticY + (dy - analyticY) * trust];
       }
@@ -362,7 +361,7 @@
             const center = trace(shape, px, py, surface, IOR);
             valid[cell] = 1;
             const base = cell * 6;
-            const disperse = surface.frontNormal[2] < 0.9965;
+            const disperse = -surface.distance < 11 && surface.frontNormal[2] < 0.9965;
             const red = disperse ? trace(shape, px, py, surface, SPECTRAL_IOR[0]) : center;
             const blue = disperse ? trace(shape, px, py, surface, SPECTRAL_IOR[2]) : center;
             const r = stableRayOffset(shape, surface, px, py, SPECTRAL_IOR[0], red);
@@ -405,7 +404,7 @@
           if (!changes) break;
         }
 
-        const focalLimit = shape.h < 80 ? 15 : 25;
+        const focalLimit = shape.h < 80 ? 12.5 : 21;
         for (let cell = 0; cell < columns * rows; cell++) {
           if (!inside[cell] || !valid[cell]) continue;
           const offset = cell * 6;
@@ -616,7 +615,7 @@
         const b = (y0 * optics.columns + x1) * 6;
         const c = (y1 * optics.columns + x0) * 6;
         const d = (y1 * optics.columns + x1) * 6;
-        const edgeFade = smoothstep(0, 1.1, -edgeDistance);
+        const edgeFade = smoothstep(0, 1.65, -edgeDistance);
         const lighting = optics.lighting;
         const ia = (y0 * optics.columns + x0) * 5;
         const ib = (y0 * optics.columns + x1) * 5;
@@ -658,7 +657,7 @@
         const blueX = values[a + 4] * w00 + values[b + 4] * w10 + values[c + 4] * w01 + values[d + 4] * w11;
         const blueY = values[a + 5] * w00 + values[b + 5] * w10 + values[c + 5] * w01 + values[d + 5] * w11;
         const refractionBody = smoothstep(3, 14, -edgeDistance);
-        const refractScale = edgeFade * (1 + refractionBody * 0.13);
+        const refractScale = edgeFade * (1 + refractionBody * 0.045);
         const spectrum = 1 - smoothstep(1.5, 11, -edgeDistance);
         const shiftedRedX = centerX + (redX - centerX) * spectrum;
         const shiftedRedY = centerY + (redY - centerY) * spectrum;
@@ -819,7 +818,7 @@
                 + energy[c + channel] * w01 + energy[d + channel] * w11;
               if (Math.abs(delta) < 0.003) continue;
               const radiance = srgbLinear[output[out + channel]]
-                + CAUSTIC_IRRADIANCE * clamp(delta, -0.22, 2.0);
+                + CAUSTIC_IRRADIANCE * clamp(delta, -0.09, 1.5);
               output[out + channel] = encodeLinear(radiance);
             }
           }
@@ -979,8 +978,8 @@
           const wantedY = clamp((motionY / Math.max(1, dt)) * 24, -4.4, 4.4);
           shape.waveVX += ((wantedX - shape.waveX) * stiffness - shape.waveVX * friction) * step;
           shape.waveVY += ((wantedY - shape.waveY) * stiffness - shape.waveVY * friction) * step;
-          shape.waveX = clamp(shape.waveX + shape.waveVX * step, -4.8, 4.8);
-          shape.waveY = clamp(shape.waveY + shape.waveVY * step, -4.8, 4.8);
+          shape.waveX = clamp(shape.waveX + shape.waveVX * step, -4.2, 4.2);
+          shape.waveY = clamp(shape.waveY + shape.waveVY * step, -4.2, 4.2);
           if (Math.abs(shape.waveX) + Math.abs(shape.waveY) > 0.035
             || Math.abs(shape.waveVX) + Math.abs(shape.waveVY) > 0.2) moving = true;
           else {
