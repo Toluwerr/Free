@@ -42,9 +42,9 @@
       const LIQUID_FREQUENCY = 17;
       const LIQUID_DAMPING = 0.5;
       const IOR = 1.49;
-      const SPECTRAL_IOR = [1.486, IOR, 1.496];
+      const SPECTRAL_IOR = [1.488, IOR, 1.492];
       const BACKDROP_Z = -48;
-      const CAUSTIC_IRRADIANCE = 0.0024;
+      const CAUSTIC_IRRADIANCE = 0.00125;
       const F0 = Math.pow((IOR - 1) / (IOR + 1), 2);
       const COLOR_STEPS = 8192;
       const srgbLinear = new Float32Array(256);
@@ -285,9 +285,9 @@
 
       function surfaceResponse(shape, x, y, surface) {
         const inset = -surface.distance;
-        const rimWidth = Math.min(10.5, shape.h * 0.24, shape.radius * 0.34);
+        const rimWidth = Math.min(6.2, shape.h * 0.12, shape.radius * 0.22);
         const rim = 1 - smoothstep(0, rimWidth, inset);
-        const edgeZ = 1 - rim * 0.988;
+        const edgeZ = 1 - rim * 0.985;
         const edgeXY = Math.sqrt(Math.max(0, 1 - edgeZ * edgeZ));
         const nx = surface.frontNormal[0] * (1 - rim) + surface.edgeNormal[0] * edgeXY;
         const ny = surface.frontNormal[1] * (1 - rim) + surface.edgeNormal[1] * edgeXY;
@@ -297,20 +297,18 @@
         const oy = ny / length;
         const oz = nz / length;
         const reflectance = F0 + (1 - F0) * (1 - oz) ** 5;
-        const attenuation = Math.exp(-surface.thickness * 0.00115);
+        const attenuation = Math.exp(-surface.thickness * 0.00065);
         const key = microfacet(ox, oy, oz, -0.38, -0.46, 0.802);
         const fill = microfacet(ox, oy, oz, 0.62, 0.13, 0.773);
         const kick = microfacet(ox, oy, oz, 0.08, -0.96, 0.265);
         const environment = environmentRadiance(ox, oy, oz, reflectance);
-        const highlight = key * 1.2 + fill * 0.45 + kick * 0.32;
-        const meniscus = smoothstep(0.6, 5.5, inset) * (1 - smoothstep(9.5, 26, inset));
-        const core = smoothstep(8, 24, inset) * smoothstep(0.92, 0.995, oz);
-        const dispersion = (Math.abs(surface.meridianCurvature) + Math.abs(surface.transverseCurvature)) * 0.065;
-        const rimSheen = rim * (0.32 + 0.68 * (1 - oz));
+        const specular = Math.min(0.19, key * 0.64 + fill * 0.18 + kick * 0.15);
+        const meniscus = smoothstep(0.3, 2.2, inset) * (1 - smoothstep(3.3, 7.8, inset));
+        const rimSheen = rim ** 4 * 0.105
+          * (0.55 + 0.45 * clamp(0.48 - surface.edgeNormal[1] * 0.52 - surface.edgeNormal[0] * 0.12, 0, 1));
+        const light = environment * 0.25 + specular + rimSheen + meniscus * 0.015;
         return [reflectance, attenuation,
-          environment * 0.82 + highlight * 1.02 + rimSheen * 0.36 + meniscus * (0.18 + dispersion * 0.55) + core * 0.028,
-          environment * 0.9 + highlight * 1.08 + rimSheen * 0.42 + meniscus * (0.22 + dispersion * 0.64) + core * 0.034,
-          environment * 1.0 + highlight * 1.17 + rimSheen * 0.5 + meniscus * (0.27 + dispersion * 0.76) + core * 0.042];
+          light * 0.91, light * 0.97, light * 1.065];
       }
 
       function prepareOptics(shape) {
@@ -535,7 +533,7 @@
         const b = (y0 * optics.columns + x1) * 6;
         const c = (y1 * optics.columns + x0) * 6;
         const d = (y1 * optics.columns + x1) * 6;
-        const edgeFade = smoothstep(0, 1.45, -edgeDistance);
+        const edgeFade = smoothstep(0, 1.1, -edgeDistance);
         const lighting = optics.lighting;
         const ia = (y0 * optics.columns + x0) * 5;
         const ib = (y0 * optics.columns + x1) * 5;
@@ -576,16 +574,20 @@
         const redY = values[a + 1] * w00 + values[b + 1] * w10 + values[c + 1] * w01 + values[d + 1] * w11;
         const blueX = values[a + 4] * w00 + values[b + 4] * w10 + values[c + 4] * w01 + values[d + 4] * w11;
         const blueY = values[a + 5] * w00 + values[b + 5] * w10 + values[c + 5] * w01 + values[d + 5] * w11;
-        const bodyBoost = smoothstep(3.5, 20, -edgeDistance) * 0.09;
-        const refractScale = edgeFade * (1 + bodyBoost);
-        const transmission = (1 - reflectance * 0.92) * attenuation;
-        const red = sampleLinearChannel(x + redX * refractScale, y + redY * refractScale, input, 0);
+        const refractScale = edgeFade * (1 + smoothstep(4, 20, -edgeDistance) * 0.085);
+        const spectrum = 1 - smoothstep(1.5, 11, -edgeDistance);
+        const shiftedRedX = centerX + (redX - centerX) * spectrum;
+        const shiftedRedY = centerY + (redY - centerY) * spectrum;
+        const shiftedBlueX = centerX + (blueX - centerX) * spectrum;
+        const shiftedBlueY = centerY + (blueY - centerY) * spectrum;
+        const transmission = (1 - reflectance) * attenuation;
+        const red = sampleLinearChannel(x + shiftedRedX * refractScale, y + shiftedRedY * refractScale, input, 0);
         const green = sampleLinearChannel(x + centerX * refractScale, y + centerY * refractScale, input, 1);
-        const blue = sampleLinearChannel(x + blueX * refractScale, y + blueY * refractScale, input, 2);
+        const blue = sampleLinearChannel(x + shiftedBlueX * refractScale, y + shiftedBlueY * refractScale, input, 2);
         return pack(
-          encodeLinear(red * transmission + reflectance * 0.042 + lightR),
-          encodeLinear(green * transmission + reflectance * 0.052 + lightG),
-          encodeLinear(blue * transmission + reflectance * 0.066 + lightB)
+          encodeLinear(red * transmission + lightR),
+          encodeLinear(green * transmission + lightG),
+          encodeLinear(blue * transmission + lightB)
         );
       }
 
