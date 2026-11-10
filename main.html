@@ -38,7 +38,9 @@
       const MAX_PIXELS = 2_400_000;
       const MAX_DENSITY = 1.85;
       const IOR = 1.49;
+      const SPECTRAL_IOR = [1.486, IOR, 1.496];
       const BACKDROP_Z = -48;
+      const CAUSTIC_IRRADIANCE = 0.0045;
       const F0 = Math.pow((IOR - 1) / (IOR + 1), 2);
       const COLOR_STEPS = 8192;
       const srgbLinear = new Float32Array(256);
@@ -76,9 +78,12 @@
       let pixels = null;
       let bytes = null;
       let backdrop = null;
-      let backdropBytes = null;
+      let litBackdropPixels = null;
+      let litBackdropBytes = null;
       let containerPixels = null;
       let containerBytes = null;
+      let litContainerPixels = null;
+      let litContainerBytes = null;
       let initialized = false;
       let fullRedraw = true;
       let frameRequested = false;
@@ -169,9 +174,9 @@
         ];
       }
 
-      function trace(shape, x, y, front) {
+      function trace(shape, x, y, front, ior = IOR) {
         const entry = refract(0, 0, -1,
-          front.frontNormal[0], front.frontNormal[1], front.frontNormal[2], 1 / IOR);
+          front.frontNormal[0], front.frontNormal[1], front.frontNormal[2], 1 / ior);
         if (!entry || entry[2] >= -0.01) return null;
 
         let travel = front.thickness / -entry[2];
@@ -201,7 +206,7 @@
         if (Math.abs(front.frontZ + entry[2] * travel - back.backZ) > 0.06) return null;
 
         const exit = refract(entry[0], entry[1], entry[2],
-          -back.backNormal[0], -back.backNormal[1], -back.backNormal[2], IOR);
+          -back.backNormal[0], -back.backNormal[1], -back.backNormal[2], ior);
         if (!exit || exit[2] >= -0.01) return null;
 
         const distance = (back.backZ - BACKDROP_Z) / -exit[2];
@@ -266,51 +271,61 @@
         const rows = Math.ceil(shape.h * 1.25) + 1;
         const stepX = shape.w / (columns - 1);
         const stepY = shape.h / (rows - 1);
-        const values = new Float32Array(columns * rows * 2);
+        const values = new Float32Array(columns * rows * 6);
         const lighting = new Float32Array(columns * rows * 5);
         const valid = new Uint8Array(columns * rows);
+        const inside = new Uint8Array(columns * rows);
 
         for (let y = 0; y < rows; y++) {
           const py = shape.y + Math.min(shape.h, y * stepY);
           for (let x = 0; x < columns; x++) {
             const px = shape.x + Math.min(shape.w, x * stepX);
             const surface = sampleSurface(shape, px, py);
-            const lightIndex = (y * columns + x) * 5;
+            const cell = y * columns + x;
+            const lightIndex = cell * 5;
             if (!surface) {
               lighting[lightIndex] = 1;
               continue;
             }
+            inside[cell] = 1;
             lighting.set(surfaceResponse(shape, px, py, surface), lightIndex);
-            const hit = trace(shape, px, py, surface);
-            if (!hit) continue;
-            const cell = y * columns + x;
-            const index = cell * 2;
-            values[index] = hit[0] - px;
-            values[index + 1] = hit[1] - py;
+            const center = trace(shape, px, py, surface, IOR);
+            if (!center) continue;
             valid[cell] = 1;
+            const base = cell * 6;
+            const disperse = surface.frontNormal[2] < 0.9965;
+            const red = disperse ? trace(shape, px, py, surface, SPECTRAL_IOR[0]) : center;
+            const blue = disperse ? trace(shape, px, py, surface, SPECTRAL_IOR[2]) : center;
+            const r = red || center;
+            const b = blue || center;
+            values[base] = r[0] - px;
+            values[base + 1] = r[1] - py;
+            values[base + 2] = center[0] - px;
+            values[base + 3] = center[1] - py;
+            values[base + 4] = b[0] - px;
+            values[base + 5] = b[1] - py;
           }
         }
 
-        for (let pass = 0; pass < 4; pass++) {
+        for (let pass = 0; pass < 5; pass++) {
           let changes = 0;
           const revised = values.slice();
           const filled = valid.slice();
           for (let y = 1; y < rows - 1; y++) {
             for (let x = 1; x < columns - 1; x++) {
               const cell = y * columns + x;
-              if (valid[cell] || lighting[cell * 5] === 1) continue;
-              let sumX = 0;
-              let sumY = 0;
+              if (valid[cell] || !inside[cell]) continue;
               let count = 0;
+              const sums = [0, 0, 0, 0, 0, 0];
               for (const neighbor of [cell - 1, cell + 1, cell - columns, cell + columns]) {
                 if (!valid[neighbor]) continue;
-                sumX += values[neighbor * 2];
-                sumY += values[neighbor * 2 + 1];
+                const i = neighbor * 6;
+                for (let channel = 0; channel < 6; channel++) sums[channel] += values[i + channel];
                 count++;
               }
               if (!count) continue;
-              revised[cell * 2] = sumX / count;
-              revised[cell * 2 + 1] = sumY / count;
+              const index = cell * 6;
+              for (let channel = 0; channel < 6; channel++) revised[index + channel] = sums[channel] / count;
               filled[cell] = 1;
               changes++;
             }
@@ -319,11 +334,109 @@
           valid.set(filled);
           if (!changes) break;
         }
+
         shape.optics = {
-          columns, rows, values, lighting,
-          inverseStepX: 1 / stepX,
+          columns, rows, values, lighting, inside, valid,
+          stepX, stepY, inverseStepX: 1 / stepX,
           inverseStepY: 1 / stepY
         };
+        prepareCaustics(shape);
+      }
+
+      function splatEnergy(field, width, height, x, y, channel, amount) {
+        if (x < 0 || y < 0 || x >= width - 1 || y >= height - 1) return;
+        const ix = Math.floor(x);
+        const iy = Math.floor(y);
+        const u = x - ix;
+        const v = y - iy;
+        const first = (iy * width + ix) * 3 + channel;
+        const second = first + width * 3;
+        field[first] += amount * (1 - u) * (1 - v);
+        field[first + 3] += amount * u * (1 - v);
+        field[second] += amount * (1 - u) * v;
+        field[second + 3] += amount * u * v;
+      }
+
+      function prepareCaustics(shape) {
+        const optics = shape.optics;
+        const { columns, rows, values, lighting, inside, valid, stepX, stepY } = optics;
+        let maxDisplacement = 0;
+        for (let cell = 0; cell < columns * rows; cell++) {
+          if (!inside[cell] || !valid[cell]) continue;
+          const index = cell * 6;
+          for (let c = 0; c < 6; c += 2) {
+            maxDisplacement = Math.max(maxDisplacement,
+              Math.hypot(values[index + c], values[index + c + 1]));
+          }
+        }
+        const margin = clamp(Math.ceil(maxDisplacement + 5), 8, 84);
+        const width = Math.ceil(shape.w) + margin * 2 + 2;
+        const height = Math.ceil(shape.h) + margin * 2 + 2;
+        const energy = new Float32Array(width * height * 3);
+        const weight = stepX * stepY;
+
+        for (let y = 0; y < rows; y++) {
+          const localY = y * stepY;
+          for (let x = 0; x < columns; x++) {
+            const cell = y * columns + x;
+            if (!inside[cell] || !valid[cell]) continue;
+            const localX = x * stepX;
+            const base = cell * 6;
+            const reflectance = clamp(lighting[cell * 5], 0, 1);
+            const transmission = (1 - reflectance) * (1 - reflectance);
+            for (let channel = 0; channel < 3; channel++) {
+              const index = base + channel * 2;
+              splatEnergy(energy, width, height, margin + localX, margin + localY, channel, -weight);
+              splatEnergy(energy, width, height,
+                margin + localX + values[index], margin + localY + values[index + 1],
+                channel, weight * transmission);
+            }
+          }
+        }
+
+        const filtered = new Float32Array(energy.length);
+        const weights = [1, 8, 28, 56, 70, 56, 28, 8, 1];
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const offset = (y * width + x) * 3;
+            for (let k = -4; k <= 4; k++) {
+              const px = clamp(x + k, 0, width - 1);
+              const from = (y * width + px) * 3;
+              const w = weights[k + 4] / 256;
+              for (let c = 0; c < 3; c++) filtered[offset + c] += energy[from + c] * w;
+            }
+          }
+        }
+        const blurred = new Float32Array(energy.length);
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const offset = (y * width + x) * 3;
+            for (let k = -4; k <= 4; k++) {
+              const py = clamp(y + k, 0, height - 1);
+              const from = (py * width + x) * 3;
+              const w = weights[k + 4] / 256;
+              for (let c = 0; c < 3; c++) blurred[offset + c] += filtered[from + c] * w;
+            }
+          }
+        }
+        shape.caustic = { width, height, margin, energy: blurred };
+      }
+
+      function sampleLinearChannel(x, y, input, channel) {
+        const px = clamp(x * scaleX - 0.5, 0, rasterWidth - 1);
+        const py = clamp(y * scaleY - 0.5, 0, rasterHeight - 1);
+        const left = Math.floor(px);
+        const top = Math.floor(py);
+        const right = Math.min(left + 1, rasterWidth - 1);
+        const bottom = Math.min(top + 1, rasterHeight - 1);
+        const u = px - left;
+        const v = py - top;
+        const i00 = (top * rasterWidth + left) * 4 + channel;
+        const i10 = (top * rasterWidth + right) * 4 + channel;
+        const i01 = (bottom * rasterWidth + left) * 4 + channel;
+        const i11 = (bottom * rasterWidth + right) * 4 + channel;
+        return (srgbLinear[input[i00]] * (1 - u) + srgbLinear[input[i10]] * u) * (1 - v)
+          + (srgbLinear[input[i01]] * (1 - u) + srgbLinear[input[i11]] * u) * v;
       }
 
       function opticalColor(shape, x, y, input, edgeDistance) {
@@ -340,17 +453,12 @@
         const w10 = fx * (1 - fy);
         const w01 = (1 - fx) * fy;
         const w11 = fx * fy;
-        const a = (y0 * optics.columns + x0) * 2;
-        const b = (y0 * optics.columns + x1) * 2;
-        const c = (y1 * optics.columns + x0) * 2;
-        const d = (y1 * optics.columns + x1) * 2;
         const values = optics.values;
-        const offsetX = values[a] * w00 + values[b] * w10
-          + values[c] * w01 + values[d] * w11;
-        const offsetY = values[a + 1] * w00 + values[b + 1] * w10
-          + values[c + 1] * w01 + values[d + 1] * w11;
+        const a = (y0 * optics.columns + x0) * 6;
+        const b = (y0 * optics.columns + x1) * 6;
+        const c = (y1 * optics.columns + x0) * 6;
+        const d = (y1 * optics.columns + x1) * 6;
         const edgeFade = smoothstep(0, 2.6, -edgeDistance);
-        const base = sampleColor(x + offsetX * edgeFade, y + offsetY * edgeFade, input);
         const lighting = optics.lighting;
         const ia = (y0 * optics.columns + x0) * 5;
         const ib = (y0 * optics.columns + x1) * 5;
@@ -363,7 +471,7 @@
         let lightB;
         if (edgeDistance > -7) {
           const surface = sampleSurface(shape, x, y);
-          if (!surface) return base;
+          if (!surface) return pack(0, 0, 0);
           const direct = surfaceResponse(shape, x, y, surface);
           reflectance = direct[0];
           attenuation = direct[1];
@@ -382,19 +490,28 @@
           lightB = lighting[ia + 4] * w00 + lighting[ib + 4] * w10
             + lighting[ic + 4] * w01 + lighting[id + 4] * w11;
         }
+
+        const centerX = values[a + 2] * w00 + values[b + 2] * w10
+          + values[c + 2] * w01 + values[d + 2] * w11;
+        const centerY = values[a + 3] * w00 + values[b + 3] * w10
+          + values[c + 3] * w01 + values[d + 3] * w11;
+        const redX = values[a] * w00 + values[b] * w10 + values[c] * w01 + values[d] * w11;
+        const redY = values[a + 1] * w00 + values[b + 1] * w10 + values[c + 1] * w01 + values[d + 1] * w11;
+        const blueX = values[a + 4] * w00 + values[b + 4] * w10 + values[c + 4] * w01 + values[d + 4] * w11;
+        const blueY = values[a + 5] * w00 + values[b + 5] * w10 + values[c + 5] * w01 + values[d + 5] * w11;
         const transmission = (1 - reflectance) * attenuation;
-        const red = LITTLE_ENDIAN ? base & 255 : base >>> 24;
-        const green = LITTLE_ENDIAN ? (base >>> 8) & 255 : (base >>> 16) & 255;
-        const blue = LITTLE_ENDIAN ? (base >>> 16) & 255 : (base >>> 8) & 255;
+        const red = sampleLinearChannel(x + redX * edgeFade, y + redY * edgeFade, input, 0);
+        const green = sampleLinearChannel(x + centerX * edgeFade, y + centerY * edgeFade, input, 1);
+        const blue = sampleLinearChannel(x + blueX * edgeFade, y + blueY * edgeFade, input, 2);
         return pack(
-          encodeLinear(srgbLinear[red] * transmission + reflectance * 0.105 + lightR),
-          encodeLinear(srgbLinear[green] * transmission + reflectance * 0.112 + lightG),
-          encodeLinear(srgbLinear[blue] * transmission + reflectance * 0.125 + lightB)
+          encodeLinear(red * transmission + reflectance * 0.105 + lightR),
+          encodeLinear(green * transmission + reflectance * 0.112 + lightG),
+          encodeLinear(blue * transmission + reflectance * 0.125 + lightB)
         );
       }
 
       function snapshot(shape) {
-        return { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
+        return { x: shape.x, y: shape.y, w: shape.w, h: shape.h, influence: shape.caustic.margin };
       }
 
       function bounds(shape) {
@@ -487,31 +604,55 @@
         }
       }
 
-      function sampleColor(x, y, input) {
-        const sampleX = clamp(x * scaleX - 0.5, 0, rasterWidth - 1);
-        const sampleY = clamp(y * scaleY - 0.5, 0, rasterHeight - 1);
-        const left = Math.floor(sampleX);
-        const top = Math.floor(sampleY);
-        const right = Math.min(left + 1, rasterWidth - 1);
-        const bottom = Math.min(top + 1, rasterHeight - 1);
-        const fx = sampleX - left;
-        const fy = sampleY - top;
-        const w00 = (1 - fx) * (1 - fy);
-        const w10 = fx * (1 - fy);
-        const w01 = (1 - fx) * fy;
-        const w11 = fx * fy;
-        const i00 = (top * rasterWidth + left) * 4;
-        const i10 = (top * rasterWidth + right) * 4;
-        const i01 = (bottom * rasterWidth + left) * 4;
-        const i11 = (bottom * rasterWidth + right) * 4;
-        return pack(
-          Math.round(input[i00] * w00 + input[i10] * w10
-            + input[i01] * w01 + input[i11] * w11),
-          Math.round(input[i00 + 1] * w00 + input[i10 + 1] * w10
-            + input[i01 + 1] * w01 + input[i11 + 1] * w11),
-          Math.round(input[i00 + 2] * w00 + input[i10 + 2] * w10
-            + input[i01 + 2] * w01 + input[i11 + 2] * w11)
-        );
+      function affectedBounds(shape) {
+        const margin = (shape.caustic ? shape.caustic.margin : shape.influence || 0) + 3;
+        const x0 = clamp(Math.floor((shape.x - margin) * scaleX), 0, rasterWidth);
+        const y0 = clamp(Math.floor((shape.y - margin) * scaleY), 0, rasterHeight);
+        const x1 = clamp(Math.ceil((shape.x + shape.w + margin) * scaleX), 0, rasterWidth);
+        const y1 = clamp(Math.ceil((shape.y + shape.h + margin) * scaleY), 0, rasterHeight);
+        return x1 > x0 && y1 > y0 ? { x0, y0, x1, y1 } : null;
+      }
+
+      function applyCaustic(shape, dirty, output) {
+        const map = shape.caustic;
+        const area = affectedBounds(shape);
+        if (!area) return;
+        const x0 = Math.max(dirty.x0, area.x0);
+        const y0 = Math.max(dirty.y0, area.y0);
+        const x1 = Math.min(dirty.x1, area.x1);
+        const y1 = Math.min(dirty.y1, area.y1);
+        const { width, height, margin, energy } = map;
+        const invX = 1 / scaleX;
+        const invY = 1 / scaleY;
+        for (let py = y0; py < y1; py++) {
+          const mapY = (py + 0.5) * invY - shape.y + margin;
+          if (mapY < 0 || mapY >= height - 1) continue;
+          const top = Math.floor(mapY);
+          const v = mapY - top;
+          for (let px = x0; px < x1; px++) {
+            const mapX = (px + 0.5) * invX - shape.x + margin;
+            if (mapX < 0 || mapX >= width - 1) continue;
+            const left = Math.floor(mapX);
+            const u = mapX - left;
+            const w00 = (1 - u) * (1 - v);
+            const w10 = u * (1 - v);
+            const w01 = (1 - u) * v;
+            const w11 = u * v;
+            const a = (top * width + left) * 3;
+            const b = a + 3;
+            const c = a + width * 3;
+            const d = c + 3;
+            const out = (py * rasterWidth + px) * 4;
+            for (let channel = 0; channel < 3; channel++) {
+              const delta = energy[a + channel] * w00 + energy[b + channel] * w10
+                + energy[c + channel] * w01 + energy[d + channel] * w11;
+              if (Math.abs(delta) < 0.003) continue;
+              const radiance = srgbLinear[output[out + channel]]
+                + CAUSTIC_IRRADIANCE * clamp(delta, -0.85, 2.0);
+              output[out + channel] = encodeLinear(radiance);
+            }
+          }
+        }
       }
 
       function paintShape(shape, dirty, input, output) {
@@ -582,17 +723,21 @@
             const old = shape.drawn;
             if (!old || old.x !== shape.x || old.y !== shape.y
               || old.w !== shape.w || old.h !== shape.h) {
-              if (old) dirty.push(bounds(old));
-              dirty.push(bounds(shape));
+              if (old) dirty.push(affectedBounds(old));
+              dirty.push(affectedBounds(shape));
             }
           }
         }
 
         for (const area of mergeRectangles(dirty)) {
-          copyRegion(containerPixels, backdrop, area);
-          paintShape(shapes[0], area, backdropBytes, containerBytes);
-          copyRegion(pixels, containerPixels, area);
-          paintShape(shapes[1], area, containerBytes, bytes);
+          copyRegion(litBackdropPixels, backdrop, area);
+          applyCaustic(shapes[0], area, litBackdropBytes);
+          copyRegion(containerPixels, litBackdropPixels, area);
+          paintShape(shapes[0], area, litBackdropBytes, containerBytes);
+          copyRegion(litContainerPixels, containerPixels, area);
+          applyCaustic(shapes[1], area, litContainerBytes);
+          copyRegion(pixels, litContainerPixels, area);
+          paintShape(shapes[1], area, litContainerBytes, bytes);
           context.putImageData(framebuffer, 0, 0,
             area.x0, area.y0, area.x1 - area.x0, area.y1 - area.y0);
         }
@@ -624,9 +769,12 @@
         bytes = framebuffer.data;
         pixels = new Uint32Array(bytes.buffer);
         backdrop = new Uint32Array(rasterWidth * rasterHeight);
-        backdropBytes = new Uint8Array(backdrop.buffer);
+        litBackdropPixels = new Uint32Array(rasterWidth * rasterHeight);
+        litBackdropBytes = new Uint8Array(litBackdropPixels.buffer);
         containerPixels = new Uint32Array(rasterWidth * rasterHeight);
         containerBytes = new Uint8Array(containerPixels.buffer);
+        litContainerPixels = new Uint32Array(rasterWidth * rasterHeight);
+        litContainerBytes = new Uint8Array(litContainerPixels.buffer);
         prepareBackdrop();
 
         const previous = initialized ? shapes.map(shape => ({
