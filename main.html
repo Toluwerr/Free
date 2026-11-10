@@ -44,7 +44,7 @@
       const IOR = 1.49;
       const SPECTRAL_IOR = [1.488, IOR, 1.492];
       const BACKDROP_Z = -48;
-      const CAUSTIC_IRRADIANCE = 0.00125;
+      const CAUSTIC_IRRADIANCE = 0.00145;
       const F0 = Math.pow((IOR - 1) / (IOR + 1), 2);
       const COLOR_STEPS = 8192;
       const srgbLinear = new Float32Array(256);
@@ -67,7 +67,7 @@
 
       const shapes = [
         { x: 0, y: 0, w: 340, h: 220, radius: 45, radiusMax: 45, shoulder: 58, depth: 8.6, crown: 18.5, waveX: 0, waveY: 0, waveVX: 0, waveVY: 0, drawn: null },
-        { x: 0, y: 0, w: 144, h: 48, radius: 24, radiusMax: 24, shoulder: 24, depth: 6.7, crown: 5.4, waveX: 0, waveY: 0, waveVX: 0, waveVY: 0, drawn: null }
+        { x: 0, y: 0, w: 144, h: 48, radius: 24, radiusMax: 24, shoulder: 24, depth: 6.7, crown: 5.8, waveX: 0, waveY: 0, waveVX: 0, waveVY: 0, drawn: null }
       ];
 
       let viewportWidth = 1;
@@ -302,13 +302,38 @@
         const fill = microfacet(ox, oy, oz, 0.62, 0.13, 0.773);
         const kick = microfacet(ox, oy, oz, 0.08, -0.96, 0.265);
         const environment = environmentRadiance(ox, oy, oz, reflectance);
-        const specular = Math.min(0.19, key * 0.64 + fill * 0.18 + kick * 0.15);
-        const meniscus = smoothstep(0.3, 2.2, inset) * (1 - smoothstep(3.3, 7.8, inset));
-        const rimSheen = rim ** 4 * 0.105
-          * (0.55 + 0.45 * clamp(0.48 - surface.edgeNormal[1] * 0.52 - surface.edgeNormal[0] * 0.12, 0, 1));
-        const light = environment * 0.25 + specular + rimSheen + meniscus * 0.015;
+        const direction = clamp(0.5 - surface.edgeNormal[1] * 0.43 - surface.edgeNormal[0] * 0.15, 0, 1);
+        const outerSheen = rim * rim * (0.009 + 0.043 * direction);
+        const meniscus = smoothstep(1.2, 3.6, inset) * (1 - smoothstep(6.5, 13.0, inset));
+        const innerSheen = meniscus * (0.005 + 0.018 * direction);
+        const grazing = smoothstep(0.14, 0.75, 1 - oz) * (1 - smoothstep(8, 22, inset));
+        const specular = Math.min(0.12, key * 0.52 + fill * 0.16 + kick * 0.12);
+        const volume = (1 - rim * rim) * (0.0028 + 0.0036 * smoothstep(6, 23, inset));
+        const light = Math.min(0.14, environment * 0.41) + specular + outerSheen + innerSheen
+          + grazing * 0.008 + volume;
         return [reflectance, attenuation,
-          light * 0.91, light * 0.97, light * 1.065];
+          light * 0.95, light * 0.99, light * 1.045];
+      }
+
+      function stableRayOffset(shape, surface, x, y, ior, traced) {
+        const ratio = 1 - 1 / ior;
+        const reach = Math.abs(BACKDROP_Z) + surface.thickness * 0.30;
+        const normalX = surface.frontNormal[0] / surface.frontNormal[2];
+        const normalY = surface.frontNormal[1] / surface.frontNormal[2];
+        const rawX = normalX * ratio * reach;
+        const rawY = normalY * ratio * reach;
+        const magnitude = Math.hypot(rawX, rawY);
+        const limit = shape.h < 80 ? 12 : 22;
+        const compression = magnitude > 0.00001 ? limit * Math.tanh(magnitude / limit) / magnitude : 1;
+        const analyticX = rawX * compression;
+        const analyticY = rawY * compression;
+        if (!traced) return [analyticX, analyticY];
+        const dx = traced[0] - x;
+        const dy = traced[1] - y;
+        const mismatch = Math.hypot(dx - analyticX, dy - analyticY);
+        const trust = 0.28 * (1 - smoothstep(2.2, 8.2, mismatch));
+        return [analyticX + (dx - analyticX) * trust,
+          analyticY + (dy - analyticY) * trust];
       }
 
       function prepareOptics(shape) {
@@ -335,20 +360,20 @@
             inside[cell] = 1;
             lighting.set(surfaceResponse(shape, px, py, surface), lightIndex);
             const center = trace(shape, px, py, surface, IOR);
-            if (!center) continue;
             valid[cell] = 1;
             const base = cell * 6;
             const disperse = surface.frontNormal[2] < 0.9965;
             const red = disperse ? trace(shape, px, py, surface, SPECTRAL_IOR[0]) : center;
             const blue = disperse ? trace(shape, px, py, surface, SPECTRAL_IOR[2]) : center;
-            const r = red || center;
-            const b = blue || center;
-            values[base] = r[0] - px;
-            values[base + 1] = r[1] - py;
-            values[base + 2] = center[0] - px;
-            values[base + 3] = center[1] - py;
-            values[base + 4] = b[0] - px;
-            values[base + 5] = b[1] - py;
+            const r = stableRayOffset(shape, surface, px, py, SPECTRAL_IOR[0], red);
+            const g = stableRayOffset(shape, surface, px, py, IOR, center);
+            const b = stableRayOffset(shape, surface, px, py, SPECTRAL_IOR[2], blue);
+            values[base] = r[0];
+            values[base + 1] = r[1];
+            values[base + 2] = g[0];
+            values[base + 3] = g[1];
+            values[base + 4] = b[0];
+            values[base + 5] = b[1];
           }
         }
 
@@ -378,6 +403,64 @@
           values.set(revised);
           valid.set(filled);
           if (!changes) break;
+        }
+
+        const focalLimit = shape.h < 80 ? 15 : 25;
+        for (let cell = 0; cell < columns * rows; cell++) {
+          if (!inside[cell] || !valid[cell]) continue;
+          const offset = cell * 6;
+          const dx = values[offset + 2];
+          const dy = values[offset + 3];
+          const magnitude = Math.hypot(dx, dy);
+          const ratio = magnitude > 0.00001 ? focalLimit * Math.tanh(magnitude / focalLimit) / magnitude : 1;
+          for (let channel = 0; channel < 6; channel += 2) {
+            const spectralX = values[offset + channel];
+            const spectralY = values[offset + channel + 1];
+            const component = Math.hypot(spectralX, spectralY);
+            const limit = focalLimit + 1.0;
+            const spectralRatio = component > 0.00001 ? limit * Math.tanh(component / limit) / component : 1;
+            const blend = channel === 2 ? ratio : spectralRatio;
+            values[offset + channel] *= blend;
+            values[offset + channel + 1] *= blend;
+          }
+        }
+
+        const smoothed = values.slice();
+        for (let row = 1; row < rows - 1; row++) {
+          for (let col = 1; col < columns - 1; col++) {
+            const cell = row * columns + col;
+            if (!valid[cell]) continue;
+            const top = cell - columns;
+            const bottom = cell + columns;
+            const left = cell - 1;
+            const right = cell + 1;
+            if (!valid[top] || !valid[bottom] || !valid[left] || !valid[right]) continue;
+            const i = cell * 6;
+            for (let component = 0; component < 6; component++) {
+              const adjacent = (values[top * 6 + component] + values[bottom * 6 + component]
+                + values[left * 6 + component] + values[right * 6 + component]) * 0.25;
+              smoothed[i + component] = values[i + component] * 0.35 + adjacent * 0.65;
+            }
+          }
+        }
+        values.set(smoothed);
+        for (let pass = 0; pass < 2; pass++) {
+          const revised = values.slice();
+          for (let row = 1; row < rows - 1; row++) {
+            for (let col = 1; col < columns - 1; col++) {
+              const cell = row * columns + col;
+              if (!valid[cell]) continue;
+              const neighbors = [cell - columns, cell + columns, cell - 1, cell + 1];
+              if (neighbors.some(index => !valid[index])) continue;
+              const i = cell * 6;
+              for (let component = 0; component < 6; component++) {
+                const adjacent = (values[neighbors[0] * 6 + component] + values[neighbors[1] * 6 + component]
+                  + values[neighbors[2] * 6 + component] + values[neighbors[3] * 6 + component]) * 0.25;
+                revised[i + component] = values[i + component] * 0.6 + adjacent * 0.4;
+              }
+            }
+          }
+          values.set(revised);
         }
 
         shape.optics = {
@@ -574,7 +657,8 @@
         const redY = values[a + 1] * w00 + values[b + 1] * w10 + values[c + 1] * w01 + values[d + 1] * w11;
         const blueX = values[a + 4] * w00 + values[b + 4] * w10 + values[c + 4] * w01 + values[d + 4] * w11;
         const blueY = values[a + 5] * w00 + values[b + 5] * w10 + values[c + 5] * w01 + values[d + 5] * w11;
-        const refractScale = edgeFade * (1 + smoothstep(4, 20, -edgeDistance) * 0.085);
+        const refractionBody = smoothstep(3, 14, -edgeDistance);
+        const refractScale = edgeFade * (1 + refractionBody * 0.13);
         const spectrum = 1 - smoothstep(1.5, 11, -edgeDistance);
         const shiftedRedX = centerX + (redX - centerX) * spectrum;
         const shiftedRedY = centerY + (redY - centerY) * spectrum;
@@ -640,8 +724,8 @@
               const b = sy * 0.88 - sx * 0.19;
               const major = Math.abs(a - Math.round(a / 78) * 78);
               const minor = Math.abs(b - Math.round(b / 126) * 126);
-              const stroke = 18 * clamp((1.8 - major) / 1.25, 0, 1)
-                + 7 * clamp((1.2 - minor) / 0.9, 0, 1);
+              const stroke = 25 * clamp((1.8 - major) / 1.25, 0, 1)
+                + 11 * clamp((1.2 - minor) / 0.9, 0, 1);
               const low = 8 + 10 * (1 - sy / viewportHeight) + 5.5 * Math.sin(a / 170) + 3.6 * Math.sin(b / 114);
               const value = Math.round(18 + low + stroke);
               backdrop[y * rasterWidth + x] = pack(value, value + 2, value + 6);
