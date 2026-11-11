@@ -327,8 +327,8 @@
         const glint = Math.min(0.065, key * 0.42 + fill * 0.14);
         const ridge = exterior * (0.006 + 0.035 * crown) + upper;
         const innerSheen = inner * (0.007 + top * 0.016 + left * 0.005);
-        const darkUndercut = hollow * (bottom * 0.016 + right * 0.007);
-        const light = clamp(environment * 0.66 + glint + ridge + innerSheen - darkUndercut, -0.026, 0.122);
+        const darkUndercut = hollow * (bottom * 0.014 + right * 0.006);
+        const light = clamp(environment * 0.66 + glint + ridge + innerSheen - darkUndercut, -0.024, 0.122);
         return [reflectance, attenuation, light * 0.965, light, light * 1.045];
       }
 
@@ -346,8 +346,8 @@
         const rise = smoothstep(0.1, 2.7, inset);
         const fall = 1 - smoothstep(shape.h < 80 ? 9.5 : 20, shape.h < 80 ? 23 : 50, inset);
         const skirt = 1 - 0.62 * smoothstep(shape.h * 0.14, shape.h * 0.39, inset);
-        const meniscus = (shape.h < 80 ? 2.5 : 3.8)
-          * smoothstep(0.35, 3.8, inset) * (1 - smoothstep(shape.h < 80 ? 8 : 14, shape.h < 80 ? 18 : 32, inset));
+        const meniscus = (shape.h < 80 ? 3.15 : 4.6)
+          * smoothstep(0.25, 3.9, inset) * (1 - smoothstep(shape.h < 80 ? 9.5 : 16, shape.h < 80 ? 20 : 35, inset));
         const analyticX = rawX * compression * rise * skirt + surface.edgeNormal[0] * meniscus;
         const analyticY = rawY * compression * rise * skirt + surface.edgeNormal[1] * meniscus;
         if (!traced) return [analyticX, analyticY];
@@ -632,6 +632,14 @@
           + (srgbLinear[input[i01]] * (1 - u) + srgbLinear[input[i11]] * u) * v;
       }
 
+      function filteredLinearChannel(x, y, input, channel, dx, dy, filterStrength) {
+        const center = sampleLinearChannel(x, y, input, channel);
+        if (filterStrength < 0.001) return center;
+        const a = sampleLinearChannel(x - dx, y - dy, input, channel);
+        const b = sampleLinearChannel(x + dx, y + dy, input, channel);
+        return center + (0.5 * (a + b) - center) * filterStrength;
+      }
+
       function movingReflection(shape, x, y, inset) {
         if (inset > 16) return 0;
         const hx = shape.w * 0.5;
@@ -761,12 +769,53 @@
           flowX = -centerY * jxy;
           flowY = -centerX * jyx;
         }
-        const red = sampleLinearChannel(x + (shiftedRedX * determinantFactor + flowX) * refractScale,
-          y + (shiftedRedY * determinantFactor + flowY) * refractScale, input, 0);
-        const green = sampleLinearChannel(x + (centerX * determinantFactor + flowX) * refractScale,
-          y + (centerY * determinantFactor + flowY) * refractScale, input, 1);
-        const blue = sampleLinearChannel(x + (shiftedBlueX * determinantFactor + flowX) * refractScale,
-          y + (shiftedBlueY * determinantFactor + flowY) * refractScale, input, 2);
+        const redSourceX = x + (shiftedRedX * determinantFactor + flowX) * refractScale;
+        const redSourceY = y + (shiftedRedY * determinantFactor + flowY) * refractScale;
+        const greenSourceX = x + (centerX * determinantFactor + flowX) * refractScale;
+        const greenSourceY = y + (centerY * determinantFactor + flowY) * refractScale;
+        const blueSourceX = x + (shiftedBlueX * determinantFactor + flowX) * refractScale;
+        const blueSourceY = y + (shiftedBlueY * determinantFactor + flowY) * refractScale;
+        let filterStrength = 0;
+        let filterX = 0;
+        let filterY = 0;
+        if (edgeDistance > -(shape.h < 80 ? 11 : 19)) {
+          const inverseX = optics.inverseStepX * refractScale * determinantFactor;
+          const inverseY = optics.inverseStepY * refractScale * determinantFactor;
+          const ddx = 1 + ((values[b + 2] - values[a + 2]) * (1 - fy)
+            + (values[d + 2] - values[c + 2]) * fy) * inverseX;
+          const ddy = ((values[b + 3] - values[a + 3]) * (1 - fy)
+            + (values[d + 3] - values[c + 3]) * fy) * inverseX;
+          const edx = ((values[c + 2] - values[a + 2]) * (1 - fx)
+            + (values[d + 2] - values[b + 2]) * fx) * inverseY;
+          const edy = 1 + ((values[c + 3] - values[a + 3]) * (1 - fx)
+            + (values[d + 3] - values[b + 3]) * fx) * inverseY;
+          const horizontal = Math.hypot(ddx, ddy);
+          const vertical = Math.hypot(edx, edy);
+          const footprint = Math.max(horizontal, vertical);
+          filterStrength = smoothstep(1.35, 2.3, footprint) * smoothstep(0.2, 3.8, -edgeDistance);
+          if (horizontal > vertical) {
+            filterX = 0.28 * ddx / scaleX;
+            filterY = 0.28 * ddy / scaleX;
+          } else {
+            filterX = 0.28 * edx / scaleY;
+            filterY = 0.28 * edy / scaleY;
+          }
+          const maxStep = 1.8;
+          const displacement = Math.hypot(filterX, filterY);
+          if (displacement > maxStep) {
+            filterX *= maxStep / displacement;
+            filterY *= maxStep / displacement;
+          }
+        }
+        const red = filterStrength > 0.03
+          ? filteredLinearChannel(redSourceX, redSourceY, input, 0, filterX, filterY, filterStrength)
+          : sampleLinearChannel(redSourceX, redSourceY, input, 0);
+        const green = filterStrength > 0.03
+          ? filteredLinearChannel(greenSourceX, greenSourceY, input, 1, filterX, filterY, filterStrength)
+          : sampleLinearChannel(greenSourceX, greenSourceY, input, 1);
+        const blue = filterStrength > 0.03
+          ? filteredLinearChannel(blueSourceX, blueSourceY, input, 2, filterX, filterY, filterStrength)
+          : sampleLinearChannel(blueSourceX, blueSourceY, input, 2);
         let outR = red;
         let outG = green;
         let outB = blue;
@@ -808,10 +857,31 @@
         const redAdaptation = lightR < 0 ? darkAdaptation : adaptive;
         const greenAdaptation = lightG < 0 ? darkAdaptation : adaptive;
         const blueAdaptation = lightB < 0 ? darkAdaptation : adaptive;
+        let reflectedR = 0;
+        let reflectedG = 0;
+        let reflectedB = 0;
+        if (edgeDistance > -8 && edgeDistance < -0.7) {
+          const surface = sampleSurface(shape, x, y);
+          if (surface) {
+            const nx = surface.edgeNormal[0];
+            const ny = surface.edgeNormal[1];
+            const rx = x + nx * 15 - ny * 2;
+            const ry = y + ny * 15 - 7;
+            const strength = Math.min(0.16, reflectance * 0.19)
+              * smoothstep(0.6, 2.8, -edgeDistance)
+              * (1 - smoothstep(4.6, 8, -edgeDistance));
+            const ix = clamp(Math.round(rx * scaleX - 0.5), 0, rasterWidth - 1);
+            const iy = clamp(Math.round(ry * scaleY - 0.5), 0, rasterHeight - 1);
+            const index = (iy * rasterWidth + ix) * 4;
+            reflectedR = srgbLinear[input[index]] * strength;
+            reflectedG = srgbLinear[input[index + 1]] * strength;
+            reflectedB = srgbLinear[input[index + 2]] * strength;
+          }
+        }
         return pack(
-          encodeLinear(outR * (transmission + focusGain) + lightR * redAdaptation + movingLight * 0.96 + plate * 0.96 + contrast),
-          encodeLinear(outG * (transmission + focusGain) + lightG * greenAdaptation + movingLight + plate + contrast),
-          encodeLinear(outB * (transmission + focusGain) + lightB * blueAdaptation + movingLight * 1.045 + plate * 1.045 + contrast)
+          encodeLinear(outR * (transmission + focusGain) + lightR * redAdaptation + movingLight * 0.96 + plate * 0.96 + contrast + reflectedR),
+          encodeLinear(outG * (transmission + focusGain) + lightG * greenAdaptation + movingLight + plate + contrast + reflectedG),
+          encodeLinear(outB * (transmission + focusGain) + lightB * blueAdaptation + movingLight * 1.045 + plate * 1.045 + contrast + reflectedB)
         );
       }
 
