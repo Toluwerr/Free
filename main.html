@@ -284,9 +284,10 @@
 
       function surfaceResponse(shape, x, y, surface) {
         const inset = -surface.distance;
-        const rimWidth = Math.min(shape.h * 0.22, 9.5);
+        const compact = shape.h < 80;
+        const rimWidth = Math.min(shape.h * 0.235, compact ? 8.6 : 12.5);
         const rim = 1 - smoothstep(0, rimWidth, inset);
-        const edgeZ = 1 - rim * 0.984;
+        const edgeZ = 1 - rim * 0.982;
         const edgeXY = Math.sqrt(Math.max(0, 1 - edgeZ * edgeZ));
         const nx = surface.frontNormal[0] * (1 - rim) + surface.edgeNormal[0] * edgeXY;
         const ny = surface.frontNormal[1] * (1 - rim) + surface.edgeNormal[1] * edgeXY;
@@ -296,23 +297,25 @@
         const oy = ny * inverseLength;
         const oz = nz * inverseLength;
         const reflectance = F0 + (1 - F0) * (1 - oz) ** 5;
-        const attenuation = Math.exp(-surface.thickness * 0.0009);
+        const attenuation = Math.exp(-surface.thickness * 0.00085);
         const key = microfacet(ox, oy, oz, -0.38, -0.46, 0.802);
         const fill = microfacet(ox, oy, oz, 0.62, 0.13, 0.773);
         const environment = environmentRadiance(ox, oy, oz, reflectance);
-        const direction = clamp(0.55 - surface.edgeNormal[1] * 0.34 - surface.edgeNormal[0] * 0.15, 0, 1);
-        const narrow = Math.exp(-(((inset - 0.72) / 1.12) ** 2));
-        const inner = Math.exp(-(((inset - (shape.h < 80 ? 5.7 : 7.8)) / (shape.h < 80 ? 2.0 : 3.2)) ** 2));
-        const upper = Math.max(0, -surface.edgeNormal[1]);
-        const lower = Math.max(0, surface.edgeNormal[1]);
-        const highlight = Math.min(0.085, key * 0.49 + fill * 0.19);
-        const crest = narrow * (0.012 + 0.068 * direction);
-        const meniscus = inner * (0.008 + 0.028 * (0.35 + 0.65 * upper));
-        const darkFillet = inner * lower * 0.014;
-        const body = smoothstep(7, 18, inset) * (1 - rim) * 0.003;
-        const light = Math.max(0, Math.min(0.13, environment * 0.63 + highlight + crest + meniscus - darkFillet + body));
-        return [reflectance, attenuation,
-          light * 0.96, light, light * 1.04];
+        const top = Math.max(0, -surface.edgeNormal[1]);
+        const bottom = Math.max(0, surface.edgeNormal[1]);
+        const left = Math.max(0, -surface.edgeNormal[0]);
+        const right = Math.max(0, surface.edgeNormal[0]);
+        const crown = 0.43 + top * 0.65 + left * 0.18;
+        const exterior = Math.exp(-(((inset - 0.88) / (compact ? 0.96 : 1.32)) ** 2));
+        const inner = Math.exp(-(((inset - (compact ? 5.8 : 8.6)) / (compact ? 2.25 : 3.8)) ** 2));
+        const hollow = Math.exp(-(((inset - (compact ? 3.35 : 5.1)) / (compact ? 1.85 : 2.5)) ** 2));
+        const upper = top * (0.035 + left * 0.02) * exterior;
+        const glint = Math.min(0.065, key * 0.42 + fill * 0.14);
+        const ridge = exterior * (0.006 + 0.035 * crown) + upper;
+        const innerSheen = inner * (0.007 + top * 0.016 + left * 0.005);
+        const darkUndercut = hollow * (bottom * 0.016 + right * 0.007);
+        const light = clamp(environment * 0.66 + glint + ridge + innerSheen - darkUndercut, -0.026, 0.122);
+        return [reflectance, attenuation, light * 0.965, light, light * 1.045];
       }
 
       function stableRayOffset(shape, surface, x, y, ior, traced) {
@@ -596,20 +599,40 @@
       }
 
       function movingReflection(shape, x, y, inset) {
-        if (inset > 14) return 0;
-        const u = (x - shape.x - shape.w * 0.5) / (shape.w * 0.5);
-        const v = (y - shape.y - shape.h * 0.5) / (shape.h * 0.5);
-        const speed = Math.min(1, Math.hypot(shape.waveX, shape.waveY) / 4.2);
-        const lampX = (shape.x + shape.w * 0.5) / Math.max(1, viewportWidth);
-        const shift = (lampX - 0.5) * 0.26 + shape.waveX * 0.024;
-        const lobe = Math.exp(-(((u + 0.38 - shift) / 0.51) ** 2));
-        const crest = Math.exp(-(((inset - 1.8) / 3.2) ** 2));
-        const upper = smoothstep(0.55, -0.48, v);
-        const rimGlint = 0.029 * lobe * crest * upper;
-        if (speed < 0.01) return rimGlint;
-        const forward = Math.max(0, (u * shape.waveX + v * shape.waveY) / 5.9);
-        const motion = Math.exp(-(((inset - 3.2) / 4.5) ** 2)) * forward * speed * 0.052;
-        return rimGlint + motion;
+        if (inset > 16) return 0;
+        const hx = shape.w * 0.5;
+        const hy = shape.h * 0.5;
+        const dx = x - shape.x - hx;
+        const dy = y - shape.y - hy;
+        const qx = Math.abs(dx) - (hx - shape.radius);
+        const qy = Math.abs(dy) - (hy - shape.radius);
+        let nx = 0;
+        let ny = 0;
+        if (qx > 0 && qy > 0) {
+          const length = Math.hypot(qx, qy);
+          nx = Math.sign(dx) * qx / length;
+          ny = Math.sign(dy) * qy / length;
+        } else if (qx >= qy) {
+          nx = Math.sign(dx);
+        } else {
+          ny = Math.sign(dy);
+        }
+        const center = viewportWidth * 0.30 + shape.waveX * 10;
+        const reach = Math.max(100, viewportWidth * 0.34);
+        const screen = (x - center) / reach;
+        const worldHighlight = Math.exp(-screen * screen * 2.6);
+        const topArc = Math.max(0, -ny);
+        const leftArc = Math.max(0, -nx);
+        const rimBand = Math.exp(-(((inset - 1.8) / 2.4) ** 2));
+        const fixed = rimBand * worldHighlight * (topArc * 0.021 + leftArc * 0.008);
+        const speed = clamp(Math.hypot(shape.waveX, shape.waveY) / 4, 0, 1);
+        if (speed < 0.008) return fixed;
+        const u = dx / hx;
+        const v = dy / hy;
+        const motion = (u * shape.waveX + v * shape.waveY) / 5;
+        const swept = Math.max(0, motion) * speed;
+        const moving = 0.029 * Math.exp(-(((inset - 3.3) / 4.2) ** 2)) * swept;
+        return fixed + moving;
       }
 
       function opticalColor(shape, x, y, input, edgeDistance, diffuseInput) {
@@ -718,14 +741,20 @@
         const adaptive = clamp(1.13 - 0.51 * Math.sqrt(Math.max(0, luminance)), 0.63, 1.13);
         const movingLight = movingReflection(shape, x, y, -edgeDistance);
         const interior = smoothstep(2.6, shape.h < 80 ? 10 : 16, -edgeDistance);
-        const adaptation = clamp(0.0065 - luminance * 0.013, -0.004, 0.0065);
+        const adaptation = clamp(0.0055 - luminance * 0.012, -0.0035, 0.0055);
         const vertical = clamp((y - shape.y) / shape.h, 0, 1);
         const overhead = (1 - vertical) * (1 - vertical) * 0.004;
         const plate = interior * (adaptation + overhead * (1 - Math.sqrt(Math.max(0, luminance))));
+        const innerEdge = Math.exp(-(((-edgeDistance - (shape.h < 80 ? 8.4 : 11.5)) / (shape.h < 80 ? 3.2 : 4.8)) ** 2));
+        const contrast = 0.012 * innerEdge * (0.37 - luminance);
+        const darkAdaptation = clamp(0.40 + luminance * 1.4, 0.40, 1.10);
+        const redAdaptation = lightR < 0 ? darkAdaptation : adaptive;
+        const greenAdaptation = lightG < 0 ? darkAdaptation : adaptive;
+        const blueAdaptation = lightB < 0 ? darkAdaptation : adaptive;
         return pack(
-          encodeLinear(outR * transmission + lightR * adaptive + movingLight * 0.96 + plate * 0.96),
-          encodeLinear(outG * transmission + lightG * adaptive + movingLight + plate),
-          encodeLinear(outB * transmission + lightB * adaptive + movingLight * 1.045 + plate * 1.045)
+          encodeLinear(outR * transmission + lightR * redAdaptation + movingLight * 0.96 + plate * 0.96 + contrast),
+          encodeLinear(outG * transmission + lightG * greenAdaptation + movingLight + plate + contrast),
+          encodeLinear(outB * transmission + lightB * blueAdaptation + movingLight * 1.045 + plate * 1.045 + contrast)
         );
       }
 
