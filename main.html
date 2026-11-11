@@ -45,6 +45,7 @@
       const SPECTRAL_IOR = [1.488, IOR, 1.492];
       const BACKDROP_Z = -48;
       const CAUSTIC_IRRADIANCE = 0.0016;
+      const FOCUS_RANGE = 0.065;
       const F0 = Math.pow((IOR - 1) / (IOR + 1), 2);
       const COLOR_STEPS = 8192;
       const srgbLinear = new Float32Array(256);
@@ -123,11 +124,19 @@
         const by = y - shape.y - hy;
         let dx = bx;
         let dy = by;
+        let jxx = 1;
+        let jxy = 0;
+        let jyx = 0;
+        let jyy = 1;
         if (shape.waveX || shape.waveY) {
           const u = bx / hx;
           const v = by / hy;
           dx -= shape.waveX * (v * v - 0.24) + 0.16 * shape.waveY * u * v;
           dy -= shape.waveY * (u * u - 0.24) + 0.16 * shape.waveX * u * v;
+          jxx -= 0.16 * shape.waveY * v / hx;
+          jxy -= (2 * shape.waveX * v + 0.16 * shape.waveY * u) / hy;
+          jyx -= (2 * shape.waveY * u + 0.16 * shape.waveX * v) / hx;
+          jyy -= 0.16 * shape.waveX * u / hy;
         }
         const qx = Math.abs(dx) - (hx - shape.radius);
         const qy = Math.abs(dy) - (hy - shape.radius);
@@ -168,8 +177,13 @@
         const crown = shape.crown * smooth * smooth;
         const height = shape.depth * 0.5 * smooth + crown * crownWeight;
         const radialSlope = (shape.depth * 0.5 + 2 * shape.crown * smooth * crownWeight) * slope;
-        const gx = radialSlope * nx + crown * 2 * u * v2 / hx;
-        const gy = radialSlope * ny + crown * 2 * v * u2 / hy;
+        const localGX = radialSlope * nx + crown * 2 * u * v2 / hx;
+        const localGY = radialSlope * ny + crown * 2 * v * u2 / hy;
+        const gx = localGX * jxx + localGY * jyx;
+        const gy = localGX * jxy + localGY * jyy;
+        const transformedX = nx * jxx + ny * jyx;
+        const transformedY = nx * jxy + ny * jyy;
+        const inverseEdge = 1 / Math.max(0.00001, Math.hypot(transformedX, transformedY));
         const inverseLength = 1 / Math.hypot(gx, gy, 1);
         const bend = inset < shoulder
           ? 30 * shape.depth * t * (1 - t) * (1 - 2 * t) / (shoulder * shoulder)
@@ -182,7 +196,7 @@
           backZ: -height,
           frontNormal: [gx * inverseLength, gy * inverseLength, inverseLength],
           backNormal: [gx * inverseLength, gy * inverseLength, -inverseLength],
-          edgeNormal: [nx, ny],
+          edgeNormal: [transformedX * inverseEdge, transformedY * inverseEdge],
           meridianCurvature: bend * inverseLength * inverseLength * inverseLength,
           transverseCurvature: -radialSlope * contourCurvature * inverseLength
         };
@@ -340,7 +354,8 @@
         const dx = traced[0] - x;
         const dy = traced[1] - y;
         const mismatch = Math.hypot(dx - analyticX, dy - analyticY);
-        const trust = 0.1 * fall * (1 - smoothstep(2, 6, mismatch));
+        const trust = 0.48 * smoothstep(2.2, 7.5, inset) * fall
+          * (1 - smoothstep(3, 9, mismatch));
         return [analyticX + (dx - analyticX) * trust,
           analyticY + (dy - analyticY) * trust];
       }
@@ -472,8 +487,27 @@
           values.set(revised);
         }
 
+        const focus = new Float32Array(columns * rows);
+        for (let row = 1; row < rows - 1; row++) {
+          for (let col = 1; col < columns - 1; col++) {
+            const cell = row * columns + col;
+            if (!inside[cell]) continue;
+            const left = cell - 1;
+            const right = cell + 1;
+            const top = cell - columns;
+            const bottom = cell + columns;
+            if (!valid[left] || !valid[right] || !valid[top] || !valid[bottom]) continue;
+            const udx = (values[right * 6 + 2] - values[left * 6 + 2]) / (2 * stepX);
+            const vdx = (values[right * 6 + 3] - values[left * 6 + 3]) / (2 * stepX);
+            const udy = (values[bottom * 6 + 2] - values[top * 6 + 2]) / (2 * stepY);
+            const vdy = (values[bottom * 6 + 3] - values[top * 6 + 3]) / (2 * stepY);
+            const footprint = (1 + udx) * (1 + vdy) - udy * vdx;
+            const gain = Math.tanh((footprint - 1) * 0.45) * FOCUS_RANGE;
+            focus[cell] = gain;
+          }
+        }
         shape.optics = {
-          columns, rows, values, lighting, inside, valid,
+          columns, rows, values, lighting, inside, valid, focus,
           stepX, stepY, inverseStepX: 1 / stepX,
           inverseStepY: 1 / stepY
         };
@@ -673,7 +707,8 @@
         let lightR;
         let lightG;
         let lightB;
-        if (edgeDistance > -1.5) {
+        const waveStrength = Math.abs(shape.waveX) + Math.abs(shape.waveY);
+        if (edgeDistance > -1.5 || (waveStrength > 0.03 && edgeDistance > -14)) {
           const surface = sampleSurface(shape, x, y);
           if (!surface) return pack(0, 0, 0);
           const direct = surfaceResponse(shape, x, y, surface);
@@ -705,19 +740,37 @@
         const blueY = values[a + 5] * w00 + values[b + 5] * w10 + values[c + 5] * w01 + values[d + 5] * w11;
         const refractionBody = smoothstep(3, 14, -edgeDistance);
         const refractScale = edgeFade * (1 + refractionBody * 0.045);
+        const determinantFactor = waveStrength > 0.03 ? 1 / Math.max(0.5,
+          1 - 0.16 * shape.waveY * ((localY - shape.h * 0.5) / (shape.h * 0.5)) / (shape.w * 0.5)
+          - 0.16 * shape.waveX * ((localX - shape.w * 0.5) / (shape.w * 0.5)) / (shape.h * 0.5)) : 1;
         const spectrum = 1 - smoothstep(1.5, 11, -edgeDistance);
         const shiftedRedX = centerX + (redX - centerX) * spectrum;
         const shiftedRedY = centerY + (redY - centerY) * spectrum;
         const shiftedBlueX = centerX + (blueX - centerX) * spectrum;
         const shiftedBlueY = centerY + (blueY - centerY) * spectrum;
         const transmission = (1 - reflectance) * attenuation;
-        const red = sampleLinearChannel(x + shiftedRedX * refractScale, y + shiftedRedY * refractScale, input, 0);
-        const green = sampleLinearChannel(x + centerX * refractScale, y + centerY * refractScale, input, 1);
-        const blue = sampleLinearChannel(x + shiftedBlueX * refractScale, y + shiftedBlueY * refractScale, input, 2);
+        let flowX = 0;
+        let flowY = 0;
+        if (waveStrength > 0.03) {
+          const hx = shape.w * 0.5;
+          const hy = shape.h * 0.5;
+          const u = (x - shape.x - hx) / hx;
+          const v = (y - shape.y - hy) / hy;
+          const jxy = -(2 * shape.waveX * v + 0.16 * shape.waveY * u) / hy;
+          const jyx = -(2 * shape.waveY * u + 0.16 * shape.waveX * v) / hx;
+          flowX = -centerY * jxy;
+          flowY = -centerX * jyx;
+        }
+        const red = sampleLinearChannel(x + (shiftedRedX * determinantFactor + flowX) * refractScale,
+          y + (shiftedRedY * determinantFactor + flowY) * refractScale, input, 0);
+        const green = sampleLinearChannel(x + (centerX * determinantFactor + flowX) * refractScale,
+          y + (centerY * determinantFactor + flowY) * refractScale, input, 1);
+        const blue = sampleLinearChannel(x + (shiftedBlueX * determinantFactor + flowX) * refractScale,
+          y + (shiftedBlueY * determinantFactor + flowY) * refractScale, input, 2);
         let outR = red;
         let outG = green;
         let outB = blue;
-        const diffuseAmount = (shape.h < 80 ? 0.072 : 0.14) * smoothstep(2.5, shape.h < 80 ? 10 : 16, -edgeDistance);
+        const diffuseAmount = (shape.h < 80 ? 0.084 : 0.16) * smoothstep(2.5, shape.h < 80 ? 10 : 16, -edgeDistance);
         if (diffuseAmount > 0.002) {
           const srcX = x + centerX * refractScale;
           const srcY = y + centerY * refractScale;
@@ -740,10 +793,14 @@
         const luminance = outR * 0.2126 + outG * 0.7152 + outB * 0.0722;
         const adaptive = clamp(1.13 - 0.51 * Math.sqrt(Math.max(0, luminance)), 0.63, 1.13);
         const movingLight = movingReflection(shape, x, y, -edgeDistance);
+        const concentration = (optics.focus[a / 6] * w00 + optics.focus[b / 6] * w10
+          + optics.focus[c / 6] * w01 + optics.focus[d / 6] * w11)
+          * smoothstep(1.5, 5.5, -edgeDistance);
+        const focusGain = concentration * (0.65 + 0.35 * Math.sqrt(Math.max(0, luminance)));
         const interior = smoothstep(2.6, shape.h < 80 ? 10 : 16, -edgeDistance);
-        const adaptation = clamp(0.0055 - luminance * 0.012, -0.0035, 0.0055);
+        const adaptation = clamp(0.008 - luminance * 0.017, -0.004, 0.008);
         const vertical = clamp((y - shape.y) / shape.h, 0, 1);
-        const overhead = (1 - vertical) * (1 - vertical) * 0.004;
+        const overhead = (1 - vertical) * (1 - vertical) * 0.005;
         const plate = interior * (adaptation + overhead * (1 - Math.sqrt(Math.max(0, luminance))));
         const innerEdge = Math.exp(-(((-edgeDistance - (shape.h < 80 ? 8.4 : 11.5)) / (shape.h < 80 ? 3.2 : 4.8)) ** 2));
         const contrast = 0.012 * innerEdge * (0.37 - luminance);
@@ -752,15 +809,16 @@
         const greenAdaptation = lightG < 0 ? darkAdaptation : adaptive;
         const blueAdaptation = lightB < 0 ? darkAdaptation : adaptive;
         return pack(
-          encodeLinear(outR * transmission + lightR * redAdaptation + movingLight * 0.96 + plate * 0.96 + contrast),
-          encodeLinear(outG * transmission + lightG * greenAdaptation + movingLight + plate + contrast),
-          encodeLinear(outB * transmission + lightB * blueAdaptation + movingLight * 1.045 + plate * 1.045 + contrast)
+          encodeLinear(outR * (transmission + focusGain) + lightR * redAdaptation + movingLight * 0.96 + plate * 0.96 + contrast),
+          encodeLinear(outG * (transmission + focusGain) + lightG * greenAdaptation + movingLight + plate + contrast),
+          encodeLinear(outB * (transmission + focusGain) + lightB * blueAdaptation + movingLight * 1.045 + plate * 1.045 + contrast)
         );
       }
 
       function snapshot(shape) {
         return { x: shape.x, y: shape.y, w: shape.w, h: shape.h,
-          waveX: shape.waveX, waveY: shape.waveY, influence: shape.caustic.margin };
+          waveX: shape.waveX, waveY: shape.waveY, quality: activeMotion,
+          influence: shape.caustic.margin };
       }
 
       function bounds(shape) {
@@ -934,21 +992,35 @@
         const { width, height, margin, energy, rowMin, rowMax } = map;
         const invX = 1 / scaleX;
         const invY = 1 / scaleY;
+        const motion = Math.abs(shape.waveX) + Math.abs(shape.waveY) > 0.03;
+        const hx = shape.w * 0.5;
+        const hy = shape.h * 0.5;
         for (let py = y0; py < y1; py++) {
-          const mapY = (py + 0.5) * invY - shape.y + margin;
-          if (mapY < 0 || mapY >= height - 1) continue;
-          const top = Math.floor(mapY);
-          const v = mapY - top;
-          const first = Math.min(rowMin[top], rowMin[top + 1]);
-          const last = Math.max(rowMax[top], rowMax[top + 1]);
-          if (last < first) continue;
-          const rowStart = Math.max(x0, Math.floor((shape.x + first - margin - 2) * scaleX));
-          const rowEnd = Math.min(x1, Math.ceil((shape.x + last - margin + 2) * scaleX));
+          const sy = (py + 0.5) * invY - shape.y;
+          const baseY = sy + margin;
+          if (baseY < 0 || baseY >= height - 1) continue;
+          const top0 = Math.floor(baseY);
+          const first = Math.min(rowMin[top0], rowMin[top0 + 1]);
+          const last = Math.max(rowMax[top0], rowMax[top0 + 1]);
+          if (last < first && !motion) continue;
+          const rowStart = motion ? x0 : Math.max(x0, Math.floor((shape.x + first - margin - 2) * scaleX));
+          const rowEnd = motion ? x1 : Math.min(x1, Math.ceil((shape.x + last - margin + 2) * scaleX));
           for (let px = rowStart; px < rowEnd; px++) {
-            const mapX = (px + 0.5) * invX - shape.x + margin;
-            if (mapX < 0 || mapX >= width - 1) continue;
+            const sx = (px + 0.5) * invX - shape.x;
+            let mapX = sx + margin;
+            let mapY = baseY;
+            if (motion) {
+              const u = (sx - hx) / hx;
+              const v = (sy - hy) / hy;
+              mapX -= shape.waveX * (v * v - 0.24) + 0.16 * shape.waveY * u * v;
+              mapY -= shape.waveY * (u * u - 0.24) + 0.16 * shape.waveX * u * v;
+            }
+            if (mapX < 0 || mapY < 0 || mapX >= width - 1 || mapY >= height - 1) continue;
             const left = Math.floor(mapX);
+            const top = Math.floor(mapY);
+            if (motion && rowMax[top] < rowMin[top] && rowMax[top + 1] < rowMin[top + 1]) continue;
             const u = mapX - left;
+            const v = mapY - top;
             const w00 = (1 - u) * (1 - v);
             const w10 = u * (1 - v);
             const w01 = (1 - u) * v;
@@ -962,8 +1034,9 @@
               const delta = energy[a + channel] * w00 + energy[b + channel] * w10
                 + energy[c + channel] * w01 + energy[d + channel] * w11;
               if (Math.abs(delta) < 0.003) continue;
-              const radiance = srgbLinear[output[out + channel]]
-                + CAUSTIC_IRRADIANCE * clamp(delta, -0.09, 1.5);
+              const original = srgbLinear[output[out + channel]];
+              const radiance = original + CAUSTIC_IRRADIANCE * clamp(delta, -0.09, 1.5)
+                * (0.58 + 0.42 * Math.sqrt(original));
               output[out + channel] = encodeLinear(radiance);
             }
           }
@@ -1042,7 +1115,8 @@
         return !old || old.x !== shape.x || old.y !== shape.y
           || old.w !== shape.w || old.h !== shape.h
           || (old.waveX || 0) !== shape.waveX
-          || (old.waveY || 0) !== shape.waveY;
+          || (old.waveY || 0) !== shape.waveY
+          || old.quality !== activeMotion;
       }
 
       function render() {
@@ -1295,6 +1369,7 @@
         const point = position(event);
         canvas.style.cursor = event.pointerType === 'touch'
           ? 'default' : hitTest(point.x, point.y) ? 'grab' : 'default';
+        requestRender();
       }
 
       canvas.addEventListener('pointerup', release);
