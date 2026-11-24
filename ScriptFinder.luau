@@ -755,13 +755,26 @@ if RunService:IsServer() then
         local isGame = type(target) == "table" and target.action == "game"
         local isSearch = type(target) == "table" and target.action == "search"
         local isFiltered = type(target) == "table" and target.action == "filtered"
+        local isRScripts = type(target) == "table" and target.action == "rscripts"
+        local isRScriptsDetail = type(target) == "table" and target.action == "rscriptsDetail"
+        local rsFilters = isRScripts and Filters.normalize(target.filters) or nil
         local isHaxHell = type(target) == "table" and target.action == "haxhell"
         local isHaxHellDetail = type(target) == "table" and target.action == "haxhellDetail"
         local isHaxHellCode = type(target) == "table" and target.action == "haxhellCode"
         local filters = isFiltered and Filters.normalize(target.filters) or nil
         local haxhellFilters = isHaxHell and Filters.normalize(target.filters) or nil
         local isDetail = type(target) == "string"
-        if isHaxHell then
+        if isRScripts then
+            if not rsFilters or type(target.query) ~= "string" or #target.query > 480
+                or normalizeSearch(target.query) ~= target.query
+                or type(target.page) ~= "number" or target.page < 1 or target.page > 200
+                or target.page ~= math.floor(target.page)
+                or type(target.gameOnly) ~= "boolean" then
+                return {error = "Invalid RScripts request"}
+            end
+        elseif isRScriptsDetail then
+            if not identifier(target.slug) then return {error = "Invalid RScripts slug"} end
+        elseif isHaxHell then
             if not haxhellFilters or type(target.query) ~= "string" or #target.query > 480
                 or normalizeSearch(target.query) ~= target.query
                 or type(target.page) ~= "number" or target.page < 1 or target.page > 1000000
@@ -813,7 +826,10 @@ if RunService:IsServer() then
         elseif type(target) ~= "number" or target ~= target or target < 1 or target > 1000000 or target ~= math.floor(target) then
             return {error = "Invalid page"}
         end
-        local key = isHaxHell and ("haxhell:" .. (target.gameOnly and tostring(game.PlaceId) or "all")
+        local key = (isRScripts and ("rscripts:" .. tostring(target.page) .. ":"
+                .. tostring(target.gameOnly) .. ":" .. Filters.key(rsFilters) .. ":" .. target.query))
+            or (isRScriptsDetail and ("rscriptsDetail:" .. target.slug))
+            or isHaxHell and ("haxhell:" .. (target.gameOnly and tostring(game.PlaceId) or "all")
                 .. ":" .. tostring(target.page) .. ":" .. Filters.key(haxhellFilters) .. ":" .. target.query)
             or (isHaxHellDetail and ("haxhellDetail:" .. target.slug))
             or (isHaxHellCode and ("haxhellCode:" .. target.slug))
@@ -827,7 +843,8 @@ if RunService:IsServer() then
         local now = os.clock()
         local activity = recent[player] or {}
         recent[player] = activity
-        local kind = isHaxHell and "haxhell" or ((isHaxHellDetail or isHaxHellCode) and "haxhellDetail")
+        local kind = isRScripts and "rscripts" or (isRScriptsDetail and "rscriptsDetail")
+            or isHaxHell and "haxhell" or ((isHaxHellDetail or isHaxHellCode) and "haxhellDetail")
             or ((isSearch or isFiltered) and "search" or (isCode and "code" or (isComments and "comments" or (isDetail and "detail" or (isGame and "game" or "page")))))
         if now - (activity[kind] or -math.huge) < (isCode and 0.6 or (isDetail and 0.25 or 0.5)) then
             return {error = "Please try again"}
@@ -849,7 +866,11 @@ if RunService:IsServer() then
         requests += 1
         pending[key] = true
         local ok, data
-        if isHaxHell then
+        if isRScripts then
+            ok, data = pcall(fetchRScriptsCatalogue, target.page, target.query, rsFilters, target.gameOnly)
+        elseif isRScriptsDetail then
+            ok, data = pcall(fetchRScriptsDetails, target.slug)
+        elseif isHaxHell then
             ok, data = pcall(fetchHaxHellCatalogue, target.page, target.query, haxhellFilters, target.gameOnly)
         elseif isHaxHellDetail then
             ok, data = pcall(fetchHaxHellDetails, target.slug)
@@ -2864,6 +2885,12 @@ local function requestData(target)
     end
     if type(target) == "table" and target.action == "code" then
         return fetchCode(target.id)
+    end
+    if type(target) == "table" and target.action == "rscripts" then
+        return fetchRScriptsCatalogue(target.page, target.query, target.filters, target.gameOnly)
+    end
+    if type(target) == "table" and target.action == "rscriptsDetail" then
+        return fetchRScriptsDetails(target.slug)
     end
     if type(target) == "table" and target.action == "haxhell" then
         return fetchHaxHellCatalogue(target.page, target.query, target.filters, target.gameOnly)
