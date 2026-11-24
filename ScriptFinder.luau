@@ -1683,6 +1683,7 @@ local function updatePagination()
     end
 end
 
+do
 local settingsButton = create("TextButton", {
     Name = "SettingsButton",
     Position = UDim2.fromOffset(12, 9),
@@ -1947,6 +1948,7 @@ bind(content:GetPropertyChangedSignal("Visible"), function()
 end)
 settings.update(false)
 sizeSettings()
+end
 
 local function formatCounter(n)
     if n == nil then
