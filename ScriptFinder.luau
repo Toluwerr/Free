@@ -150,27 +150,31 @@ local function line(parent, x1, y1, x2, y2, thickness, transparency, color)
     }, parent)
 end
 
-local function disc(parent, x, y, diameter, color, layer)
-    local dot = create("Frame", {
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.fromOffset(x, y),
-        Size = UDim2.fromOffset(diameter, diameter),
-        BackgroundColor3 = color,
-        BorderSizePixel = 0,
-        ZIndex = parent.ZIndex + (layer or 1),
-    }, parent)
-    create("UICorner", {CornerRadius = UDim.new(0.5, 0)}, dot)
-    return dot
-end
+local Lucide = table.freeze({
+    ["arrow-left"] = {"rbxassetid://16898612629", Vector2.new(98, 918)},
+    ["arrow-right"] = {"rbxassetid://16898612629", Vector2.new(453, 820)},
+    ["search"] = {"rbxassetid://16898613699", Vector2.new(918, 857)},
+    ["star"] = {"rbxassetid://16898613777", Vector2.new(967, 147)},
+    ["gamepad-2"] = {"rbxassetid://16898613353", Vector2.new(710, 967)},
+})
 
-local function strokePath(parent, points, thickness, color)
-    for index = 1, #points - 1 do
-        local a, b = points[index], points[index + 1]
-        line(parent, a[1], a[2], b[1], b[2], thickness, 0, color)
-    end
-    for _, point in ipairs(points) do
-        disc(parent, point[1], point[2], thickness, color)
-    end
+local function lucide(parent, name, size, color, visible)
+    local asset = Lucide[name]
+    return create("ImageLabel", {
+        Name = "Icon",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromOffset(size, size),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Image = asset[1],
+        ImageRectOffset = asset[2],
+        ImageRectSize = Vector2.new(48, 48),
+        ImageColor3 = color,
+        ScaleType = Enum.ScaleType.Stretch,
+        Visible = visible ~= false,
+        ZIndex = parent.ZIndex + 1,
+    }, parent)
 end
 
 local function paintIcon(icon, name)
@@ -412,20 +416,7 @@ local function pageControl(name, x, direction)
         ZIndex = 5,
     }, navigation)
     round(button, 7)
-    local icon = create("Frame", {
-        Name = "Icon",
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.fromScale(0.5, 0.5),
-        Size = UDim2.fromOffset(18, 18),
-        BackgroundTransparency = 1,
-        BorderSizePixel = 0,
-        ZIndex = 6,
-    }, button)
-    local function x(value)
-        return 9 + direction * value
-    end
-    strokePath(icon, {{x(-6), 9}, {x(6), 9}}, 1.8, Theme.Text)
-    strokePath(icon, {{x(0), 3}, {x(6), 9}, {x(0), 15}}, 1.8, Theme.Text)
+    lucide(button, direction < 0 and "arrow-left" or "arrow-right", 18, Theme.Text)
     bind(button.MouseEnter, function()
         hover(button, 0)
     end)
@@ -470,18 +461,7 @@ local searchIconButton = create("TextButton", {
     ZIndex = 5,
 }, searchPill)
 
-local searchIcon = create("Frame", {
-    Name = "Icon",
-    AnchorPoint = Vector2.new(0.5, 0.5),
-    Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(18, 18),
-    BackgroundTransparency = 1,
-    ZIndex = 6,
-}, searchIconButton)
-
-strokePath(searchIcon, {{11.6, 11.6}, {16, 16}}, 2, Theme.Accent)
-disc(searchIcon, 7.5, 7.5, 12, Theme.Accent, 2)
-disc(searchIcon, 7.5, 7.5, 8, Theme.Raised, 3)
+lucide(searchIconButton, "search", 18, Theme.Accent)
 
 local textViewport = create("Frame", {
     Name = "TextViewport",
@@ -527,7 +507,7 @@ local shortcuts = create("Frame", {
     ZIndex = 4,
 }, content)
 
-local function shortcut(name, labelWidth, draw)
+local function shortcut(name, labelWidth, iconName)
     local button = create("TextButton", {
         Name = name,
         Size = UDim2.fromOffset(labelWidth, 38),
@@ -542,16 +522,7 @@ local function shortcut(name, labelWidth, draw)
         ZIndex = 5,
     }, shortcuts)
     round(button, 7)
-    local icon = create("Frame", {
-        Name = "Icon",
-        AnchorPoint = Vector2.new(0.5, 0.5),
-        Position = UDim2.fromScale(0.5, 0.5),
-        Size = UDim2.fromOffset(20, 20),
-        BackgroundTransparency = 1,
-        Visible = false,
-        ZIndex = 6,
-    }, button)
-    draw(icon)
+    local icon = lucide(button, iconName, 20, Theme.Text, false)
     bind(button.MouseEnter, function()
         hover(button, 0)
     end)
@@ -568,25 +539,8 @@ local function shortcut(name, labelWidth, draw)
     end
 end
 
-local favoriteShortcut = shortcut("Favorites", 74, function(icon)
-    local points = {}
-    for index = 0, 9 do
-        local angle = math.rad(-90 + index * 36)
-        local radius = index % 2 == 0 and 8 or 3.7
-        table.insert(points, {10 + math.cos(angle) * radius, 10 + math.sin(angle) * radius})
-    end
-    table.insert(points, points[1])
-    strokePath(icon, points, 1.5, Theme.Text)
-end)
-
-local gameShortcut = shortcut("Game", 50, function(icon)
-    local outline = {{5, 5.5}, {15, 5.5}, {17, 7}, {18.5, 13}, {17, 15.5}, {15, 15.5}, {12.5, 13}, {7.5, 13}, {5, 15.5}, {3, 15.5}, {1.5, 13}, {3, 7}, {5, 5.5}}
-    strokePath(icon, outline, 1.5, Theme.Text)
-    strokePath(icon, {{5.5, 9.5}, {9, 9.5}}, 1.5, Theme.Text)
-    strokePath(icon, {{7.25, 7.75}, {7.25, 11.25}}, 1.5, Theme.Text)
-    disc(icon, 13, 9.5, 1.7, Theme.Text)
-    disc(icon, 15.5, 11, 1.7, Theme.Text)
-end)
+local favoriteShortcut = shortcut("Favorites", 74, "star")
+local gameShortcut = shortcut("Game", 50, "gamepad-2")
 
 local function layoutSearchBar()
     local width = content.AbsoluteSize.X
