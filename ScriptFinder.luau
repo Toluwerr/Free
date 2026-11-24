@@ -145,7 +145,7 @@ end
 local function readResponse(url)
     local body
     if RunService:IsServer() then
-        body = HttpService:GetAsync(url, true, {Accept = "application/json"})
+        body = HttpService:GetAsync(url, false, {Accept = "application/json"})
     else
         body = game:HttpGet(url)
     end
@@ -182,7 +182,10 @@ local function summaryFor(item)
 end
 
 local function fetchCatalogue(target)
-    local url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d", target, PageSize)
+    local url = string.format(
+        "https://scriptblox.com/api/script/fetch?page=%d&max=%d&sortBy=updatedAt&order=desc&fresh=%s",
+        target, PageSize, HttpService:GenerateGUID(false)
+    )
     local decoded = readResponse(url)
     local result = decoded.result
     if type(result) ~= "table" or type(result.scripts) ~= "table" then
@@ -1096,6 +1099,7 @@ local pageMotion = {}
 local activeCards = {}
 local displayedPage
 local lastCatalogueRequest = -math.huge
+local requestFreshCatalogue
 
 local function clearPageMotion()
     for _, tween in ipairs(pageMotion) do
@@ -1544,6 +1548,7 @@ local function makePage(items)
     scroller:GetPropertyChangedSignal("AbsoluteSize"):Connect(layoutCards)
     scroller:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
         if pumpImageQueue then task.defer(pumpImageQueue) end
+        if requestFreshCatalogue then task.defer(requestFreshCatalogue, 6) end
     end)
     scroller:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
         if pumpImageQueue then task.defer(pumpImageQueue) end
@@ -2220,6 +2225,9 @@ closeDetails = function()
         table.insert(pageMotion, tween)
         tween:Play()
     end
+    if requestFreshCatalogue then
+        task.defer(requestFreshCatalogue, 2)
+    end
 end
 
 openDetails = function(item)
@@ -2341,6 +2349,20 @@ local function loadCatalogue(target, direction)
         updatePagination()
         hydrateCards(data.items, token)
     end)
+end
+
+requestFreshCatalogue = function(interval)
+    if not alive or selectedProvider ~= 3 or loading or detailView
+        or not content.Visible or not results.Visible then
+        return
+    end
+    if not activePageView and not retryPage then
+        return
+    end
+    if os.clock() - lastCatalogueRequest < (interval or 6) then
+        return
+    end
+    loadCatalogue(retryPage or page, 0)
 end
 
 changePage = function(direction)
@@ -2877,8 +2899,22 @@ bind(dotButton.Activated, function()
 end)
 
 bind(UserInputService.WindowFocused, function()
-    if alive and mode ~= "dot" and mode ~= "closed" and selectedProvider == 3 and not loading and not detailView and os.clock() - lastCatalogueRequest >= 2 then
-        loadCatalogue(page, 0)
+    if alive and mode ~= "dot" and mode ~= "closed" then
+        requestFreshCatalogue(2)
+    end
+end)
+
+bind(UserInputService.InputBegan, function(input)
+    if not alive or not results.Visible or detailView
+        or (input.UserInputType ~= Enum.UserInputType.MouseButton1
+            and input.UserInputType ~= Enum.UserInputType.Touch) then
+        return
+    end
+    local p = input.Position
+    local origin, extent = results.AbsolutePosition, results.AbsoluteSize
+    if p.X >= origin.X and p.X <= origin.X + extent.X
+        and p.Y >= origin.Y and p.Y <= origin.Y + extent.Y then
+        requestFreshCatalogue(6)
     end
 end)
 
