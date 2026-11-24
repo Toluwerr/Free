@@ -1591,6 +1591,7 @@ local settings = {
     path = "ScriptFinder/Settings.json",
     defaults = {
         startInFavorites = false,
+        autoStartScriptFinder = false,
         showStatistics = true,
         confirmExecution = true,
         refreshOnFocus = true,
@@ -1602,7 +1603,136 @@ local settings = {
     open = false,
     motion = nil,
     generation = 0,
+    autoStartStatus = "Off",
+    autoStartInstalled = false,
+    teleportQueued = false,
 }
+
+settings.bootstrap = [=[
+local ok, err = pcall(function()
+    if type(isfile) ~= "function" or type(readfile) ~= "function"
+        or not isfile("ScriptFinder/Settings.json") then
+        return
+    end
+    local HttpService = game:GetService("HttpService")
+    local data = HttpService:JSONDecode(readfile("ScriptFinder/Settings.json"))
+    if type(data) ~= "table" or data.autoStartScriptFinder ~= true then
+        return
+    end
+    if not game:IsLoaded() then game.Loaded:Wait() end
+    local Players = game:GetService("Players")
+    local player = Players.LocalPlayer
+    if not player then
+        Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+        player = Players.LocalPlayer
+    end
+    if not player then return end
+    local playerGui = player:WaitForChild("PlayerGui", 12)
+    if not playerGui then return end
+    if playerGui:FindFirstChild("ScriptFinderWindow") then return end
+    local compile = loadstring
+    if type(compile) ~= "function" then return end
+    local url = "https://raw.githubusercontent.com/Toluwerr/Free/main/ScriptFinder.luau"
+    local source = game:HttpGet(url)
+    local run, compileError = compile(source)
+    if type(run) ~= "function" then
+        error(tostring(compileError))
+    end
+    run()
+end)
+if not ok then warn("ScriptFinder startup: " .. tostring(err)) end
+]=]
+
+function settings.autoExecPath()
+    if not settings.persistent then return nil end
+    for _, folder in ipairs({"autoexec", "AutoExec", "autoexecute", "AutoExecute"}) do
+        local ok, exists = pcall(isfolder, folder)
+        if ok and exists then
+            return folder .. "/ScriptFinder.luau"
+        end
+    end
+    return nil
+end
+
+function settings.queueTeleport()
+    local queue = type(queue_on_teleport) == "function" and queue_on_teleport
+        or (type(queueonteleport) == "function" and queueonteleport)
+        or (syn and type(syn.queue_on_teleport) == "function" and syn.queue_on_teleport)
+    if type(queue) ~= "function" then return false end
+    if settings.teleportQueued then return true end
+    local ok, message = pcall(queue, settings.bootstrap)
+    if not ok then
+        warn("ScriptFinder startup: " .. tostring(message))
+        return false
+    end
+    settings.teleportQueued = true
+    return true
+end
+
+function settings.configureAutoStart()
+    local enabled = settings.values.autoStartScriptFinder == true
+    local directory = settings.autoExecPath()
+    if not enabled then
+        for _, folder in ipairs({"autoexec", "AutoExec", "autoexecute", "AutoExecute"}) do
+            local file = folder .. "/ScriptFinder.luau"
+            if type(isfile) == "function" and type(delfile) == "function" then
+                local ok, exists = pcall(isfile, file)
+                if ok and exists then
+                    local removed, message = pcall(delfile, file)
+                    if not removed then warn("ScriptFinder startup: " .. tostring(message)) end
+                end
+            end
+        end
+        settings.autoStartInstalled = false
+        settings.autoStartStatus = "Off"
+        gui:SetAttribute("AutoStartInstalled", false)
+        return true
+    end
+    if not settings.persistent then
+        settings.autoStartStatus = "Local file storage is unavailable"
+        gui:SetAttribute("AutoStartInstalled", false)
+        return false
+    end
+    local installed = false
+    if directory then
+        local ok, message = pcall(function()
+            writefile(directory, settings.bootstrap)
+            assert(isfile(directory), "Startup file was not created")
+        end)
+        installed = ok
+        if not ok then warn("ScriptFinder startup: " .. tostring(message)) end
+    end
+    local queued = settings.queueTeleport()
+    settings.autoStartInstalled = installed
+    gui:SetAttribute("AutoStartInstalled", installed)
+    if installed and queued then
+        settings.autoStartStatus = "Startup file installed; game switches supported"
+    elseif installed then
+        settings.autoStartStatus = "Startup file installed; executor handles new sessions"
+    elseif queued then
+        settings.autoStartStatus = "Game switches only; startup folder not detected"
+    else
+        settings.autoStartStatus = "Unsupported: no accessible executor startup feature"
+    end
+    return installed or queued
+end
+
+function settings.setAutoStart(enabled)
+    local old = settings.values.autoStartScriptFinder
+    settings.values.autoStartScriptFinder = enabled
+    if not settings.save() then
+        settings.values.autoStartScriptFinder = old
+        settings.autoStartStatus = "Unable to save the startup preference"
+        return false
+    end
+    local ok = settings.configureAutoStart()
+    if enabled and not ok then
+        settings.values.autoStartScriptFinder = false
+        settings.save()
+        return false
+    end
+    return true
+end
 
 function settings.load()
     settings.values = table.clone(settings.defaults)
@@ -1642,6 +1772,9 @@ end
 
 settings.load()
 gui:SetAttribute("SettingsPersistent", settings.persistent)
+if settings.values.autoStartScriptFinder then
+    settings.configureAutoStart()
+end
 
 local function clearPageMotion()
     for _, tween in ipairs(pageMotion) do
@@ -1837,27 +1970,47 @@ local function createSettingsRow(key, title, description, order)
     settingsRows[key] = {track = track, thumb = thumb}
     row.Activated:Connect(function()
         if not alive then return end
-        settings.values[key] = not settings.values[key]
-        settings.save()
+        if key == "autoStartScriptFinder" then
+            settings.setAutoStart(not settings.values.autoStartScriptFinder)
+        else
+            settings.values[key] = not settings.values[key]
+            settings.save()
+        end
         if settings.update then settings.update(true) end
     end)
 end
 
-createSettingsRow("startInFavorites", "Start in Favorites", "Open your saved collection when ScriptFinder starts.", 1)
-createSettingsRow("showStatistics", "Show statistics", "Display the compact views, executions, and likes pill.", 2)
-createSettingsRow("confirmExecution", "Confirm execution", "Require a second click before running any script.", 3)
-createSettingsRow("refreshOnFocus", "Refresh on focus", "Check for new posts when Roblox regains focus.", 4)
+createSettingsRow("autoStartScriptFinder", "Auto-start ScriptFinder", "Launch the ScriptFinder interface on new sessions or game switches when supported.", 1)
+createSettingsRow("startInFavorites", "Start in Favorites", "Open your saved collection when ScriptFinder starts.", 2)
+createSettingsRow("showStatistics", "Show statistics", "Display the compact views, executions, and likes pill.", 3)
+createSettingsRow("confirmExecution", "Confirm execution", "Require a second click before running any script.", 4)
+createSettingsRow("refreshOnFocus", "Refresh on focus", "Check for new posts when Roblox regains focus.", 5)
+
+local startupStatus = create("TextLabel", {
+    Name = "StartupStatus",
+    LayoutOrder = 6,
+    Size = UDim2.new(1, -5, 0, 30),
+    BackgroundTransparency = 1,
+    FontFace = Theme.Font,
+    TextSize = 11,
+    TextWrapped = true,
+    TextYAlignment = Enum.TextYAlignment.Center,
+    Text = "",
+    TextColor3 = Theme.Text:Lerp(Theme.Window, 0.28),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 40,
+}, settingsList)
 
 local settingsFootnote = create("TextLabel", {
     Name = "ExecutionNotice",
-    LayoutOrder = 5,
+    LayoutOrder = 7,
     Size = UDim2.new(1, -5, 0, 58),
     BackgroundTransparency = 1,
     FontFace = Theme.Font,
     TextSize = 11,
     TextWrapped = true,
     TextYAlignment = Enum.TextYAlignment.Top,
-    Text = "Script execution is manual. Third-party scripts are not run automatically when Roblox starts or changes games.",
+    Text = "Only ScriptFinder itself can auto-start. Listed scripts still require manual execution. Reopening Roblox also requires the executor to attach automatically.",
     TextColor3 = Theme.Text:Lerp(Theme.Window, 0.3),
     TextXAlignment = Enum.TextXAlignment.Left,
     ZIndex = 40,
@@ -1893,6 +2046,7 @@ function settings.update(animated)
         end
     end
     settingsSaved.Text = settings.persistent and (gui:GetAttribute("SettingsPersistent") and "Saved locally" or "Unable to save") or "Changes last for this session"
+    startupStatus.Text = "Auto-start: " .. settings.autoStartStatus
     for _, element in ipairs(gui:GetDescendants()) do
         if element:IsA("Frame") and (element.Name == "Metrics" or element.Name == "Statistics") then
             element.Visible = settings.values.showStatistics
