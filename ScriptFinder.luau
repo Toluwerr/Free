@@ -34,11 +34,19 @@ end
 
 local function fetchCatalogue(target)
     local url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d&sortBy=createdAt&order=desc", target, PageSize)
-    local response = HttpService:RequestAsync({Url = url, Method = "GET", Headers = {Accept = "application/json"}})
-    if not response.Success then
-        error("HTTP " .. tostring(response.StatusCode), 0)
+    local body
+    if RunService:IsServer() then
+        body = HttpService:GetAsync(url, true, {Accept = "application/json"})
+    else
+        body = game:HttpGet(url)
     end
-    local decoded = HttpService:JSONDecode(response.Body)
+    if type(body) ~= "string" or body == "" then
+        error("Empty ScriptBlox response", 0)
+    end
+    local decoded = HttpService:JSONDecode(body)
+    if type(decoded) == "table" and type(decoded.message) == "string" and not decoded.result then
+        error(decoded.message, 0)
+    end
     local result = type(decoded) == "table" and decoded.result
     if type(result) ~= "table" or type(result.scripts) ~= "table" then
         error("Invalid catalogue response", 0)
@@ -104,7 +112,7 @@ if RunService:IsServer() then
         pending[target] = nil
         if not ok then
             warn("ScriptFinder: " .. tostring(data))
-            return {error = "Unable to load catalogue"}
+            return {error = "Server HTTP request failed; see server output"}
         end
         if not cache[target] then
             table.insert(order, target)
@@ -939,8 +947,12 @@ local function loadCatalogue(target, direction)
         else
             ok, data = pcall(function()
                 local remote = ReplicatedStorage:FindFirstChild(CatalogRemote)
-                if not remote and RunService:IsStudio() then
-                    remote = ReplicatedStorage:WaitForChild(CatalogRemote, 4)
+                if RunService:IsStudio() then
+                    remote = remote or ReplicatedStorage:WaitForChild(CatalogRemote, 8)
+                    if not remote or not remote:IsA("RemoteFunction") then
+                        error("Studio requires the ScriptFinderCatalog server script and HTTP requests enabled", 0)
+                    end
+                    return remote:InvokeServer(target)
                 end
                 if remote and remote:IsA("RemoteFunction") then
                     return remote:InvokeServer(target)
@@ -954,12 +966,12 @@ local function loadCatalogue(target, direction)
         loading = false
         if not ok or type(data) ~= "table" or type(data.items) ~= "table" or type(data.totalPages) ~= "number" then
             retryPage = target
-            feedback.Text = "Couldn't load ScriptBlox. Click to retry."
+            local reason = not ok and tostring(data) or (type(data) == "table" and data.error or "Invalid catalogue response")
+            reason = tostring(reason):gsub("[%c]", " ")
+            warn("ScriptFinder catalogue: " .. reason)
+            feedback.Text = "ScriptBlox: " .. string.sub(reason, 1, 180)
             feedback.Visible = true
             feedback.BackgroundTransparency = activePageView and 0.1 or 1
-            if not ok then
-                warn("ScriptFinder catalogue: " .. tostring(data))
-            end
             updatePagination()
             return
         end
