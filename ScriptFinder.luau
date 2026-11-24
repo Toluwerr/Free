@@ -157,7 +157,7 @@ local function readResponse(url)
         error("Invalid ScriptBlox response", 0)
     end
     if type(decoded.message) == "string" and not decoded.result and not decoded.script then
-        error("ScriptBlox request failed", 0)
+        error(plainText(decoded.message, 160) or "ScriptBlox request failed", 0)
     end
     return decoded
 end
@@ -182,10 +182,7 @@ local function summaryFor(item)
 end
 
 local function fetchCatalogue(target)
-    local url = string.format(
-        "https://scriptblox.com/api/script/fetch?page=%d&max=%d&sortBy=updatedAt&order=desc&fresh=%s",
-        target, PageSize, HttpService:GenerateGUID(false)
-    )
+    local url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d", target, PageSize)
     local decoded = readResponse(url)
     local result = decoded.result
     if type(result) ~= "table" or type(result.scripts) ~= "table" then
