@@ -213,8 +213,15 @@ local function summaryFor(item)
     }
 end
 
-local function fetchCatalogue(target)
+local function fetchCatalogue(target, placeId)
     local url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d&sortBy=createdAt&order=desc", target, PageSize)
+    if placeId ~= nil then
+        local id = numericId(placeId)
+        if not id then
+            error("Current place is unavailable", 0)
+        end
+        url ..= "&placeId=" .. id
+    end
     local decoded = readResponse(url, true)
     local result = decoded.result
     if type(result) ~= "table" or type(result.scripts) ~= "table" then
@@ -377,8 +384,15 @@ if RunService:IsServer() then
     remote.OnServerInvoke = function(player, target)
         local isComments = type(target) == "table" and target.action == "comments"
         local isCode = type(target) == "table" and target.action == "code"
+        local isGame = type(target) == "table" and target.action == "game"
         local isDetail = type(target) == "string"
-        if isCode then
+        if isGame then
+            if type(target.page) ~= "number" or target.page < 1
+                or target.page > 1000000 or target.page ~= math.floor(target.page)
+                or not numericId(game.PlaceId) then
+                return {error = "Invalid game catalogue request"}
+            end
+        elseif isCode then
             if not identifier(target.id) then
                 return {error = "Invalid source identifier"}
             end
@@ -395,11 +409,12 @@ if RunService:IsServer() then
             return {error = "Invalid page"}
         end
         local key = isCode and ("code:" .. target.id)
-            or (isComments and ("comments:" .. target.id .. ":" .. tostring(target.page))) or target
+            or (isComments and ("comments:" .. target.id .. ":" .. tostring(target.page)))
+            or (isGame and ("game:" .. tostring(game.PlaceId) .. ":" .. tostring(target.page))) or target
         local now = os.clock()
         local activity = recent[player] or {}
         recent[player] = activity
-        local kind = isCode and "code" or (isComments and "comments" or (isDetail and "detail" or "page"))
+        local kind = isCode and "code" or (isComments and "comments" or (isDetail and "detail" or (isGame and "game" or "page")))
         if now - (activity[kind] or -math.huge) < (isCode and 0.6 or (isDetail and 0.25 or 0.5)) then
             return {error = "Please try again"}
         end
@@ -420,7 +435,9 @@ if RunService:IsServer() then
         requests += 1
         pending[key] = true
         local ok, data
-        if isCode then
+        if isGame then
+            ok, data = pcall(fetchCatalogue, target.page, game.PlaceId)
+        elseif isCode then
             ok, data = pcall(fetchCode, target.id)
         elseif isComments then
             ok, data = pcall(fetchComments, target.id, target.page)
@@ -916,6 +933,7 @@ local selectorTween = nil
 local page = 1
 local totalPages
 local changePage
+local catalogueScope = "all"
 
 gui:SetAttribute("Provider", providers[selectedProvider].Name)
 gui:SetAttribute("Page", page)
@@ -1070,7 +1088,7 @@ local function shortcut(name, labelWidth, iconName)
         hover(button, 0)
     end)
     bind(button.MouseLeave, function()
-        hover(button, 1)
+        hover(button, button:GetAttribute("Selected") and 0 or 1)
     end)
     return function(x, compact)
         local width = compact and 32 or labelWidth
@@ -1079,11 +1097,27 @@ local function shortcut(name, labelWidth, iconName)
         button.Text = compact and "" or name
         icon.Visible = compact
         return width
-    end
+    end, button
 end
 
-local favoriteShortcut = shortcut("Favorites", 74, "star")
-local gameShortcut = shortcut("Game", 50, "gamepad-2")
+local favoriteShortcut, favoriteShortcutButton = shortcut("Favorites", 74, "star")
+local gameShortcut, gameShortcutButton = shortcut("Game", 50, "gamepad-2")
+
+local function updateShortcuts()
+    for _, entry in ipairs({{favoriteShortcutButton, "favorites"}, {gameShortcutButton, "game"}}) do
+        local button, scope = entry[1], entry[2]
+        local selected = selectedProvider == 3 and catalogueScope == scope
+        local color = selected and Theme.Accent or Theme.Text
+        button:SetAttribute("Selected", selected)
+        button.Active = selectedProvider == 3
+        button.TextColor3 = color
+        local icon = button:FindFirstChild("Icon")
+        if icon then
+            icon.ImageColor3 = color
+        end
+        button.BackgroundTransparency = selected and 0 or 1
+    end
+end
 
 local results = create("Frame", {
     Name = "Results",
@@ -1136,6 +1170,115 @@ local displayedPage
 local lastCatalogueRequest = -math.huge
 local requestFreshCatalogue
 
+local favorites = {
+    path = "ScriptFinder/Favorites.json",
+    entries = {},
+    order = {},
+    dirty = false,
+    limit = 1000,
+    persistent = type(isfile) == "function" and type(isfolder) == "function"
+        and type(makefolder) == "function" and type(readfile) == "function"
+        and type(writefile) == "function",
+}
+
+function favorites.clean(item)
+    if type(item) ~= "table" or not identifier(item.id) or not identifier(item.slug) then
+        return nil
+    end
+    local title = plainText(item.title, 180)
+    if not title then return nil end
+    return {
+        id = item.id,
+        slug = item.slug,
+        title = title,
+        thumbnail = imageAsset(item.thumbnail),
+        thumbnailSource = remoteImageUrl(item.thumbnailSource),
+        views = counter(item.views),
+        likes = counter(item.likes),
+        executions = counter(item.executions),
+    }
+end
+
+function favorites.load()
+    if not favorites.persistent then return end
+    local ok, message = pcall(function()
+        if not isfile(favorites.path) then return end
+        local contents = readfile(favorites.path)
+        if type(contents) ~= "string" or #contents > 3000000 then
+            error("Invalid favorites file")
+        end
+        local decoded = HttpService:JSONDecode(contents)
+        if type(decoded) ~= "table" or type(decoded.items) ~= "table" then
+            error("Invalid favorites file")
+        end
+        for _, value in ipairs(decoded.items) do
+            if #favorites.order >= favorites.limit then break end
+            local item = favorites.clean(value)
+            if item and not favorites.entries[item.id] then
+                favorites.entries[item.id] = item
+                table.insert(favorites.order, item.id)
+            end
+        end
+    end)
+    if not ok then warn("ScriptFinder favorites: " .. tostring(message)) end
+end
+
+function favorites.save()
+    if not favorites.persistent then return false end
+    local ok, message = pcall(function()
+        if not isfolder("ScriptFinder") then makefolder("ScriptFinder") end
+        local items = {}
+        for _, id in ipairs(favorites.order) do
+            local item = favorites.clean(favorites.entries[id])
+            if item then table.insert(items, item) end
+        end
+        writefile(favorites.path, HttpService:JSONEncode({items = items}))
+    end)
+    gui:SetAttribute("FavoritesPersistent", ok)
+    if not ok then warn("ScriptFinder favorites: " .. tostring(message)) end
+    return ok
+end
+
+function favorites.toggle(item)
+    if favorites.entries[item.id] then
+        favorites.entries[item.id] = nil
+        local index = table.find(favorites.order, item.id)
+        if index then table.remove(favorites.order, index) end
+    else
+        local saved = favorites.clean(item)
+        if not saved or #favorites.order >= favorites.limit then
+            warn("ScriptFinder: favorite could not be added")
+            return
+        end
+        favorites.entries[item.id] = saved
+        table.insert(favorites.order, 1, saved.id)
+    end
+    favorites.dirty = true
+    favorites.save()
+    gui:SetAttribute("FavoriteCount", #favorites.order)
+end
+
+function favorites.page(target)
+    local pages = math.max(1, math.ceil(#favorites.order / PageSize))
+    local items = {}
+    local first = (target - 1) * PageSize + 1
+    local last = math.min(#favorites.order, first + PageSize - 1)
+    for index = first, last do
+        local saved = favorites.entries[favorites.order[index]]
+        if saved then
+            local item = table.clone(saved)
+            item.missingMetrics = {views = true, executions = true, likes = true}
+            table.insert(items, item)
+        end
+    end
+    return {items = items, totalPages = pages}
+end
+
+favorites.load()
+gui:SetAttribute("FavoritesPersistent", favorites.persistent)
+gui:SetAttribute("FavoriteCount", #favorites.order)
+gui:SetAttribute("CatalogueScope", catalogueScope)
+
 local function clearPageMotion()
     for _, tween in ipairs(pageMotion) do
         tween:Cancel()
@@ -1151,6 +1294,7 @@ local function clearPageMotion()
 end
 
 local function updatePagination()
+    updateShortcuts()
     local enabled = selectedProvider == 3 and not detailView
     navigation.Visible = not detailView
     selector.Visible = not detailView
@@ -1655,6 +1799,9 @@ local function requestData(target)
     end
     if type(target) == "table" and target.action == "code" then
         return fetchCode(target.id)
+    end
+    if type(target) == "table" and target.action == "game" then
+        return fetchCatalogue(target.page, game.PlaceId)
     end
     return type(target) == "number" and fetchCatalogue(target) or fetchDetails(target)
 end
@@ -2269,7 +2416,7 @@ closeDetails = function()
         tween:Play()
     end
     if requestFreshCatalogue then
-        task.defer(requestFreshCatalogue, 2)
+        task.defer(requestFreshCatalogue, catalogueScope == "favorites" and 0 or 2)
     end
 end
 
@@ -2303,6 +2450,30 @@ openDetails = function(item)
     round(back, 8)
     lucideIcon(back, "arrow-left", 18, Theme.Text, 8)
     back.Activated:Connect(closeDetails)
+    local favorite = create("TextButton", {
+        Name = "Favorite",
+        AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, 0, 0, 0),
+        Size = UDim2.fromOffset(32, 32),
+        BackgroundColor3 = Theme.Raised,
+        BorderSizePixel = 0,
+        Text = "",
+        AutoButtonColor = false,
+        ZIndex = 7,
+    }, view)
+    round(favorite, 8)
+    local favoriteIcon = lucideIcon(favorite, "star", 18, Theme.Text, 8)
+    local function updateFavorite()
+        local selected = favorites.entries[item.id] ~= nil
+        favorite:SetAttribute("Selected", selected)
+        favorite.BackgroundColor3 = selected and Theme.Accent or Theme.Raised
+        favoriteIcon.ImageColor3 = Theme.Text
+    end
+    favorite.Activated:Connect(function()
+        favorites.toggle(item)
+        updateFavorite()
+    end)
+    updateFavorite()
     local scroller = create("Frame", {
         Name = "Details",
         Position = UDim2.fromOffset(0, 44),
@@ -2352,6 +2523,7 @@ local function loadCatalogue(target, direction)
     end
     generation += 1
     local token = generation
+    local scope = catalogueScope
     loading = true
     retryPage = nil
     feedback.Visible = not activePageView
@@ -2360,8 +2532,15 @@ local function loadCatalogue(target, direction)
     updatePagination()
     task.spawn(function()
         lastCatalogueRequest = os.clock()
-        local ok, data = pcall(requestData, target)
-        if not alive or token ~= generation or selectedProvider ~= 3 then
+        local ok, data
+        if scope == "favorites" then
+            ok, data = pcall(favorites.page, target)
+        elseif scope == "game" then
+            ok, data = pcall(requestData, {action = "game", page = target})
+        else
+            ok, data = pcall(requestData, target)
+        end
+        if not alive or token ~= generation or selectedProvider ~= 3 or scope ~= catalogueScope then
             return
         end
         loading = false
@@ -2370,7 +2549,7 @@ local function loadCatalogue(target, direction)
             local reason = not ok and tostring(data) or (type(data) == "table" and data.error or "Invalid catalogue response")
             reason = tostring(reason):gsub("[%c]", " ")
             warn("ScriptFinder catalogue: " .. reason)
-            feedback.Text = "ScriptBlox: " .. string.sub(reason, 1, 180)
+            feedback.Text = (scope == "favorites" and "Favorites: " or "ScriptBlox: ") .. string.sub(reason, 1, 180)
             feedback.Visible = true
             feedback.BackgroundTransparency = activePageView and 0.1 or 1
             updatePagination()
@@ -2383,11 +2562,14 @@ local function loadCatalogue(target, direction)
             return
         end
         page = target
+        if scope == "favorites" then favorites.dirty = false end
         hasLoaded = true
         gui:SetAttribute("Page", page)
         gui:SetAttribute("TotalPages", totalPages)
         feedback.Visible = #data.items == 0
-        feedback.Text = #data.items == 0 and "No scripts on this page." or ""
+        local empty = scope == "favorites" and "No favorites yet."
+            or (scope == "game" and "No scripts found for this place." or "No scripts on this page.")
+        feedback.Text = #data.items == 0 and empty or ""
         presentPage(data.items, direction, target)
         updatePagination()
         hydrateCards(data.items, token)
@@ -2400,6 +2582,12 @@ requestFreshCatalogue = function(interval)
         return
     end
     if not activePageView and not retryPage then
+        return
+    end
+    if catalogueScope == "favorites" then
+        if favorites.dirty or retryPage then
+            loadCatalogue(math.min(page, math.max(1, math.ceil(#favorites.order / PageSize))), 0)
+        end
         return
     end
     if os.clock() - lastCatalogueRequest < (interval or 6) then
@@ -2420,10 +2608,12 @@ bind(feedback.Activated, function()
     end
 end)
 
-local function switchCatalogue()
+local function switchCatalogue(scope)
     if detailView then
         closeDetails()
     end
+    catalogueScope = scope or "all"
+    gui:SetAttribute("CatalogueScope", catalogueScope)
     generation += 1
     loading, hasLoaded, retryPage = false, false, nil
     clearPageMotion()
@@ -2442,6 +2632,18 @@ local function switchCatalogue()
         loadCatalogue(1, 0)
     end
 end
+
+bind(favoriteShortcutButton.Activated, function()
+    if selectedProvider == 3 and not detailView then
+        switchCatalogue(catalogueScope == "favorites" and "all" or "favorites")
+    end
+end)
+
+bind(gameShortcutButton.Activated, function()
+    if selectedProvider == 3 and not detailView then
+        switchCatalogue(catalogueScope == "game" and "all" or "game")
+    end
+end)
 
 local function layoutSearchBar()
     local width = content.AbsoluteSize.X
