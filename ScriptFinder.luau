@@ -336,7 +336,7 @@ if RunService:IsServer() then
         local activity = recent[player] or {}
         recent[player] = activity
         local kind = isImage and "image" or (isDetail and "detail" or "page")
-        local delay = isImage and 0.07 or (isDetail and 0.25 or 0.5)
+        local delay = isImage and 0 or (isDetail and 0.25 or 0.5)
         if now - (activity[kind] or -math.huge) < delay then
             return {error = "Please try again"}
         end
@@ -1435,12 +1435,13 @@ local function applyImage(label, native, source, kind)
         return
     end
     if not entry then
-        entry = {source = source, kind = kind, pending = {}, lastUsed = os.clock()}
+        entry = {source = source, kind = kind, pending = {}, lastUsed = os.clock(), queued = true}
         imageCache[key] = entry
         imageCacheSize += 1
         table.insert(imageQueue, entry)
     elseif entry.failedAt then
         entry.failedAt = nil
+        entry.queued = true
         table.insert(imageQueue, entry)
     end
     entry.pending[label] = true
@@ -1476,6 +1477,7 @@ pumpImageQueue = function()
     while alive and activeImageLoads < 2 and #imageQueue > 0 do
         local entry = table.remove(imageQueue, 1)
         if not entry.loading and not entry.content then
+            entry.queued = false
             entry.loading = true
             activeImageLoads += 1
             task.spawn(function()
@@ -1980,7 +1982,7 @@ local function renderDetails(body, item, data)
             BorderSizePixel = 0,
             ZIndex = 9,
         }, scroll)
-        local hasAvatar = data.avatar and data.avatar ~= ""
+        local hasAvatar = (data.avatar and data.avatar ~= "") or data.avatarSource ~= nil
         if not hasAvatar then
             author.Size = UDim2.new(1, 0, 0, 20)
         end
