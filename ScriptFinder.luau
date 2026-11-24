@@ -7,6 +7,7 @@ local AssetService = game:GetService("AssetService")
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 local CatalogRemote = "ScriptFinderCatalog"
 local PageSize = 20
@@ -33,7 +34,12 @@ local function remoteImageUrl(value)
         return nil
     end
     host = host:lower()
-    if host == "scriptblox.com" or host == "www.scriptblox.com" or host == "cdn.scriptblox.com" then
+    if host == "haxhell.com" or host == "www.haxhell.com" or host == "cdn.haxhell.com" then
+        if route:match("^/images/[%w%._%-%/]+$") or route:match("^/uploads/[%w%._%-%/]+$")
+            or route:match("^/storage/[%w%._%-%/]+$") then
+            return "https://" .. host .. route
+        end
+    elseif host == "scriptblox.com" or host == "www.scriptblox.com" or host == "cdn.scriptblox.com" then
         if route:match("^/images/[%w%._%-%/]+$") then
             return "https://" .. host .. route
         end
@@ -349,6 +355,147 @@ local function fetchCatalogue(target, placeId, query, filters)
         end
     end
     return {totalPages = math.max(1, math.floor(total)), items = items}
+end
+
+local function haxhellSummary(item)
+    if type(item) ~= "table" then return nil end
+    local slug = item.slug
+    local sourceId = identifier(item.id) and item.id or slug
+    if not identifier(slug) or not identifier(sourceId) then return nil end
+    local title = plainText(item.title, 180)
+    if not title then return nil end
+    local experience = type(item.game) == "table" and item.game or {}
+    local author = type(item.author) == "table" and item.author or {}
+    local stats = type(item.stats) == "table" and item.stats or {}
+    local flags = type(item.flags) == "table" and item.flags or {}
+    local media = type(item.media) == "table" and item.media or {}
+    local placeId = numericId(experience.placeId)
+    local universeId = numericId(experience.universeId)
+    local thumbnail = ""
+    if item.type ~= "universal" then
+        if placeId then
+            thumbnail = "rbxthumb://type=GameThumbnail&id=" .. placeId .. "&w=384&h=216"
+        elseif universeId then
+            thumbnail = "rbxthumb://type=GameIcon&id=" .. universeId .. "&w=150&h=150"
+        end
+    end
+    return {
+        id = "hh_" .. sourceId, provider = 2, slug = slug,
+        title = title:gsub("\n", " "),
+        thumbnail = thumbnail,
+        thumbnailSource = remoteImageUrl(media.thumbnailUrl)
+            or remoteImageUrl(experience.thumbnailUrl) or remoteImageUrl(experience.iconUrl),
+        author = plainText(author.username, 100),
+        avatarSource = remoteImageUrl(author.avatar),
+        avatar = imageAsset(author.avatar),
+        description = plainText(item.description, 8000),
+        gameName = plainText(experience.name or experience.gameName, 140),
+        scriptType = flags.isPaid == true and "paid" or "free",
+        isUniversal = item.type == "universal",
+        verified = if type(flags.verified) == "boolean" then flags.verified
+            else author.isScripterVerified == true,
+        views = counter(stats.views), likes = counter(stats.likes),
+        executions = nil, commentsCount = counter(stats.comments),
+        favoritesCount = counter(stats.favorites),
+        createdAt = plainText(item.createdAt, 64),
+        updatedAt = plainText(item.updatedAt, 64),
+    }
+end
+
+local currentGameName
+local function haxhellGameName()
+    if currentGameName then return currentGameName end
+    local title = game.Name
+    if numericId(game.PlaceId) then
+        local ok, info = pcall(MarketplaceService.GetProductInfo, MarketplaceService, game.PlaceId, Enum.InfoType.Asset)
+        if ok and type(info) == "table" and type(info.Name) == "string" and info.Name ~= "" then
+            title = info.Name
+        end
+    end
+    currentGameName = normalizeSearch(title)
+    return currentGameName
+end
+
+local function fetchHaxHellCatalogue(page, query, filters, gameOnly)
+    query = normalizeSearch(query)
+    filters = Filters.normalize(filters)
+    if not filters then error("Invalid HaxHell filters", 0) end
+    if query ~= "" and #query < 2 then
+        return {totalPages = 1, items = {}, insufficientQuery = true}
+    end
+    local sort = ({newest = "latest", updated = "updated", views = "views"})[filters.sort] or "latest"
+    local params = {"page=" .. tostring(page), "limit=" .. tostring(PageSize), "sort=" .. sort}
+    if query ~= "" then table.insert(params, "q=" .. HttpService:UrlEncode(query)) end
+    if filters.cost ~= "all" then table.insert(params, "isPaid=" .. tostring(filters.cost == "paid")) end
+    if filters.scope ~= "all" then
+        table.insert(params, "type=" .. (filters.scope == "universal" and "universal" or "game"))
+    end
+    if gameOnly then
+        local title = haxhellGameName()
+        if not title or title == "" then error("Game name unavailable", 0) end
+        table.insert(params, "gameName=" .. HttpService:UrlEncode(title))
+    end
+    local decoded = readResponse("https://haxhell.com/api/v1/scripts?" .. table.concat(params, "&"), true)
+    if type(decoded.error) == "string" then
+        error(plainText(decoded.error, 180) or "HaxHell request failed", 0)
+    end
+    if type(decoded.data) ~= "table" or type(decoded.pagination) ~= "table" then
+        error("Invalid HaxHell catalogue response", 0)
+    end
+    local total = tonumber(decoded.pagination.totalPages)
+    if not total or total ~= total or total < 0 or total > 1000000 then
+        total = page + (decoded.pagination.hasMore == true and 1 or 0)
+    end
+    local items = {}
+    for _, entry in ipairs(decoded.data) do
+        if #items >= PageSize then break end
+        local item = haxhellSummary(entry)
+        if item then
+            item.missingMetrics = {}
+            table.insert(items, item)
+        end
+    end
+    return {totalPages = math.max(1, math.floor(total)), items = items}
+end
+
+local function fetchHaxHellDetails(slug)
+    if not identifier(slug) then error("Invalid HaxHell script identifier", 0) end
+    local decoded = readResponse("https://haxhell.com/api/v1/scripts/" .. HttpService:UrlEncode(slug), true)
+    if type(decoded.error) == "string" then
+        error(plainText(decoded.error, 180) or "HaxHell details unavailable", 0)
+    end
+    local entry = decoded.data
+    local info = haxhellSummary(entry)
+    if not info then error("Invalid HaxHell script details", 0) end
+    local source = type(entry.source) == "table" and entry.source or {}
+    if type(source.code) == "string" and #source.code > 0 and #source.code <= 350000 then
+        info.source = source.code
+    end
+    local description = info.description or ""
+    if type(entry.features) == "table" then
+        local features = {}
+        for _, feature in ipairs(entry.features) do
+            if #features >= 12 then break end
+            local value = plainText(feature, 180)
+            if value then table.insert(features, "• " .. value) end
+        end
+        if #features > 0 then description ..= "\n\nFeatures\n" .. table.concat(features, "\n") end
+    end
+    info.description = plainText(description, 8000)
+    return info
+end
+
+local function fetchHaxHellCode(slug)
+    if not identifier(slug) then error("Invalid HaxHell identifier", 0) end
+    local url = "https://haxhell.com/api/raw/" .. HttpService:UrlEncode(slug)
+    local source = if RunService:IsServer()
+        then HttpService:GetAsync(url, true, {Accept = "text/plain"})
+        else game:HttpGet(url)
+    if type(source) ~= "string" or #source == 0 or #source > 350000
+        or source:match("^%s*<") or source:match('^%s*{"') then
+        error("HaxHell source unavailable", 0)
+    end
+    return {source = source}
 end
 
 local function normalizeComments(comments)
