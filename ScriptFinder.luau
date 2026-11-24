@@ -695,7 +695,7 @@ if RunService:IsServer() then
                 .. ":" .. tostring(target.page) .. ":" .. Filters.key(haxhellFilters) .. ":" .. target.query)
             or (isHaxHellDetail and ("haxhellDetail:" .. target.slug))
             or (isHaxHellCode and ("haxhellCode:" .. target.slug))
-            or (isFiltered and ("filtered:" .. (target.gameOnly and tostring(game.PlaceId) or "all")
+            or isFiltered and ("filtered:" .. (target.gameOnly and tostring(game.PlaceId) or "all")
                 .. ":" .. tostring(target.page) .. ":" .. Filters.key(filters) .. ":" .. target.query)
             or (isSearch and ("search:" .. (target.gameOnly and tostring(game.PlaceId) or "all")
                 .. ":" .. tostring(target.page) .. ":" .. target.query))
