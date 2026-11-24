@@ -18,34 +18,7 @@ local function numericId(value)
     end
 end
 
-local ApprovedImageAssets = table.freeze({})
-
-local function imageSource(value)
-    if type(value) ~= "string" or #value > 1024 then
-        return nil
-    end
-    local path = value:match("^https://scriptblox%.com(/images/[%w%._/%-]+)$")
-        or value:match("^(/images/[%w%._/%-]+)$")
-    if path and not path:find("..", 1, true) then
-        return "https://scriptblox.com" .. path
-    end
-    return nil
-end
-
-local function approvedImage(value)
-    local source = imageSource(value)
-    if not source then
-        return ""
-    end
-    local asset = numericId(ApprovedImageAssets[source])
-    return asset and ("rbxassetid://" .. asset) or ""
-end
-
 local function imageAsset(value)
-    local imported = approvedImage(value)
-    if imported ~= "" then
-        return imported
-    end
     if type(value) == "number" then
         local id = numericId(value)
         return id and ("rbxassetid://" .. id) or ""
@@ -170,7 +143,6 @@ local function summaryFor(item)
         slug = identifier(item.slug) and item.slug or id,
         title = title:gsub("\n", " "),
         thumbnail = thumbnailFor(item),
-        thumbnailSource = imageSource(item.image) or imageSource(type(item.game) == "table" and item.game.imageUrl),
         views = counter(item.views, item.viewCount, stats.views),
         executions = counter(item.executeCount, item.executionCount, item.executions, item.executes, item.totalExecutions, stats.executions),
         likes = counter(item.likeCount, item.likes, stats.likes),
@@ -218,7 +190,6 @@ local function fetchDetails(slug)
     end
     local owner = type(item.owner) == "table" and item.owner or {}
     info.author = plainText(owner.username, 100)
-    info.avatarSource = imageSource(owner.profilePicture) or imageSource(owner.avatarUrl) or imageSource(owner.avatar)
     info.avatar = imageAsset(owner.profilePicture)
     if info.avatar == "" then
         info.avatar = imageAsset(owner.profilePictureAssetId or owner.avatarAssetId)
@@ -1116,16 +1087,6 @@ local function makeMetrics(parent, item, layer)
     return pill, counters
 end
 
-local reportedImageSources = {}
-
-local function recordImageSource(label, source)
-    label:SetAttribute("ExternalImageSource", source)
-    if source and label.Image == "" and not reportedImageSources[source] then
-        reportedImageSources[source] = true
-        warn("ScriptFinder: approved image asset needed for " .. source)
-    end
-end
-
 local function makeCard(scroller, item, index)
     local card = create("Frame", {
         Name = "ScriptCard",
@@ -1146,7 +1107,6 @@ local function makeCard(scroller, item, index)
         ZIndex = 4,
     }, card)
     round(image, 8)
-    recordImageSource(image, item.thumbnailSource)
     local pill, counters = makeMetrics(image, item, 5)
     pill.AnchorPoint = Vector2.new(0, 1)
     pill.Position = UDim2.new(0, 6, 1, -6)
@@ -1201,7 +1161,6 @@ local function reconcileCards(scroller, items)
                 if view.image.Image ~= item.thumbnail then
                     view.image.Image = item.thumbnail
                 end
-                recordImageSource(view.image, item.thumbnailSource)
                 if view.title.Text ~= item.title then
                     view.title.Text = item.title
                 end
@@ -1354,9 +1313,6 @@ local function mergeMetadata(item, data)
     if not data then
         return
     end
-    if data.thumbnailSource then
-        item.thumbnailSource = data.thumbnailSource
-    end
     for _, key in ipairs({"views", "executions", "likes"}) do
         if data[key] ~= nil then
             item[key] = data[key]
@@ -1376,7 +1332,6 @@ local function updateCard(item, data)
     if view.image.Image ~= item.thumbnail then
         view.image.Image = item.thumbnail
     end
-    recordImageSource(view.image, item.thumbnailSource)
     for key, label in pairs(view.counters) do
         local value = formatCounter(item[key])
         if label.Text ~= value then
@@ -1442,7 +1397,6 @@ local function renderDetails(body, item, data)
         ZIndex = 8,
     }, left)
     round(picture, 8)
-    recordImageSource(picture, data and data.thumbnailSource or item.thumbnailSource)
 
     local commentsCard = create("Frame", {
         Name = "CommentsCard",
@@ -1546,10 +1500,6 @@ local function renderDetails(body, item, data)
                 ZIndex = 10,
             }, author)
             round(avatar, 18)
-            recordImageSource(avatar, data.avatarSource)
-        elseif data.avatarSource and not reportedImageSources[data.avatarSource] then
-            reportedImageSources[data.avatarSource] = true
-            warn("ScriptFinder: approved avatar asset needed for " .. data.avatarSource)
         end
         local byline = create("Frame", {
             Name = "Byline",
