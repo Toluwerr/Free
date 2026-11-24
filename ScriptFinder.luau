@@ -4,6 +4,123 @@ local TweenService = game:GetService("TweenService")
 local GuiService = game:GetService("GuiService")
 local AssetService = game:GetService("AssetService")
 
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local CatalogRemote = "ScriptFinderCatalog"
+local PageSize = 20
+
+local function thumbnailFor(entry)
+    local info = type(entry.game) == "table" and entry.game or {}
+    local image = type(entry.image) == "string" and entry.image or ""
+    if image == "" and type(info.imageUrl) == "string" then
+        image = info.imageUrl
+    end
+    if image:match("^rbxassetid://%d+$") then
+        return image
+    end
+    local id = image:match("^https://www%.roblox%.com/asset/%?id=(%d+)$")
+        or image:match("^https://assetdelivery%.roblox%.com/v1/asset/%?id=(%d+)$")
+    if id then
+        return "rbxassetid://" .. id
+    end
+    local place = tonumber(info.placeId or entry.placeId or info.gameId)
+    if place and place > 0 and place < 9007199254740992 and place == math.floor(place) then
+        return string.format("rbxthumb://type=GameThumbnail&id=%.0f&w=384&h=216", place)
+    end
+    return ""
+end
+
+local function fetchCatalogue(target)
+    local url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d&sortBy=createdAt&order=desc", target, PageSize)
+    local response = HttpService:RequestAsync({Url = url, Method = "GET", Headers = {Accept = "application/json"}})
+    if not response.Success then
+        error("HTTP " .. tostring(response.StatusCode), 0)
+    end
+    local decoded = HttpService:JSONDecode(response.Body)
+    local result = type(decoded) == "table" and decoded.result
+    if type(result) ~= "table" or type(result.scripts) ~= "table" then
+        error("Invalid catalogue response", 0)
+    end
+    local total = tonumber(result.totalPages)
+    if not total or total ~= total or total < 0 or total > 1000000 then
+        error("Invalid page count", 0)
+    end
+    local items = {}
+    for _, item in ipairs(result.scripts) do
+        if #items >= PageSize then
+            break
+        end
+        if type(item) == "table" and type(item.title) == "string" then
+            local title = item.title:gsub("[%c]", " ")
+            local length = utf8.len(title)
+            if length and length > 0 then
+                if length > 180 then
+                    title = title:sub(1, utf8.offset(title, 181) - 1)
+                end
+                table.insert(items, {title = title, thumbnail = thumbnailFor(item)})
+            end
+        end
+    end
+    return {totalPages = math.max(1, math.floor(total)), items = items}
+end
+
+if RunService:IsServer() then
+    local remote = ReplicatedStorage:FindFirstChild(CatalogRemote)
+    if not remote then
+        remote = Instance.new("RemoteFunction")
+        remote.Name = CatalogRemote
+        remote.Parent = ReplicatedStorage
+    end
+    assert(remote:IsA("RemoteFunction"), "Invalid catalogue remote")
+    local cache, order, recent, pending = {}, {}, {}, {}
+    local windowStart, requests = os.clock(), 0
+    remote.OnServerInvoke = function(player, target)
+        if type(target) ~= "number" or target ~= target or target < 1 or target > 1000000 or target ~= math.floor(target) then
+            return {error = "Invalid page"}
+        end
+        local now = os.clock()
+        if now - (recent[player] or -math.huge) < 0.5 then
+            return {error = "Please try again"}
+        end
+        recent[player] = now
+        local entry = cache[target]
+        if entry and now - entry.time < 45 then
+            return entry.data
+        end
+        if pending[target] then
+            return {error = "Page loading"}
+        end
+        if now - windowStart >= 60 then
+            windowStart, requests = now, 0
+        end
+        if requests >= 45 then
+            return {error = "Request limit reached"}
+        end
+        requests += 1
+        pending[target] = true
+        local ok, data = pcall(fetchCatalogue, target)
+        pending[target] = nil
+        if not ok then
+            warn("ScriptFinder: " .. tostring(data))
+            return {error = "Unable to load catalogue"}
+        end
+        if not cache[target] then
+            table.insert(order, target)
+        end
+        cache[target] = {time = os.clock(), data = data}
+        if #order > 24 then
+            cache[table.remove(order, 1)] = nil
+        end
+        return data
+    end
+    Players.PlayerRemoving:Connect(function(player)
+        recent[player] = nil
+    end)
+    return
+end
+
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
@@ -446,10 +563,12 @@ local selectorInput = create("TextButton", {
     ZIndex = 7,
 }, selector)
 
-local selectedProvider = 1
+local selectedProvider = 3
 local selectorGesture = nil
 local selectorTween = nil
 local page = 1
+local totalPages
+local changePage
 
 gui:SetAttribute("Provider", providers[selectedProvider].Name)
 gui:SetAttribute("Page", page)
@@ -491,14 +610,29 @@ local function pageControl(name, x, direction)
         hover(button, 0)
     end)
     bind(button.Activated, function()
-        page = math.max(1, page + direction)
-        gui:SetAttribute("Page", page)
+        if changePage then
+            changePage(direction)
+        end
     end)
     return button
 end
 
-pageControl("PreviousPage", 0, -1)
-pageControl("NextPage", 86, 1)
+local previousPageButton = pageControl("PreviousPage", 0, -1)
+local nextPageButton = pageControl("NextPage", 86, 1)
+
+local pageLabel = create("TextLabel", {
+    Name = "PageNumber",
+    Position = UDim2.fromOffset(30, 0),
+    Size = UDim2.fromOffset(56, 38),
+    BackgroundTransparency = 1,
+    Text = "",
+    TextColor3 = Theme.Text,
+    FontFace = Theme.Font,
+    TextSize = 11,
+    TextScaled = true,
+    ZIndex = 5,
+}, navigation)
+create("UITextSizeConstraint", {MinTextSize = 7, MaxTextSize = 11}, pageLabel)
 
 local searchPill = create("Frame", {
     Name = "Search",
@@ -604,6 +738,285 @@ end
 local favoriteShortcut = shortcut("Favorites", 74, "star")
 local gameShortcut = shortcut("Game", 50, "gamepad-2")
 
+local results = create("Frame", {
+    Name = "Results",
+    Position = UDim2.fromOffset(14, 62),
+    Size = UDim2.new(1, -28, 1, -88),
+    BackgroundTransparency = 1,
+    ClipsDescendants = true,
+    BorderSizePixel = 0,
+    ZIndex = 2,
+}, content)
+
+local attribution = create("TextLabel", {
+    Name = "Attribution",
+    Position = UDim2.new(0, 14, 1, -22),
+    Size = UDim2.new(1, -28, 0, 16),
+    BackgroundTransparency = 1,
+    Text = "Powered by ScriptBlox.com",
+    TextColor3 = Theme.Text:Lerp(Theme.Window, 0.46),
+    FontFace = Theme.Font,
+    TextSize = 10,
+    TextXAlignment = Enum.TextXAlignment.Right,
+    ZIndex = 3,
+}, content)
+
+local feedback = create("TextButton", {
+    Name = "CatalogueFeedback",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.new(1, -24, 0, 44),
+    BackgroundColor3 = Theme.Window,
+    BackgroundTransparency = 1,
+    Text = "",
+    TextColor3 = Theme.Text:Lerp(Theme.Window, 0.3),
+    FontFace = Theme.Font,
+    TextSize = 12,
+    TextWrapped = true,
+    AutoButtonColor = false,
+    Visible = false,
+    ZIndex = 5,
+}, results)
+round(feedback, 8)
+
+local activePageView, outgoingPageView, retryPage
+local generation, loading, hasLoaded = 0, false, false
+local catalogCache, cacheOrder, pageMotion = {}, {}, {}
+
+local function clearPageMotion()
+    for _, tween in ipairs(pageMotion) do
+        tween:Cancel()
+    end
+    table.clear(pageMotion)
+    if outgoingPageView then
+        outgoingPageView:Destroy()
+        outgoingPageView = nil
+    end
+    if activePageView then
+        activePageView.Position = UDim2.fromOffset(0, 0)
+        activePageView.GroupTransparency = 0
+    end
+end
+
+local function updatePagination()
+    local enabled = selectedProvider == 3
+    pageLabel.Visible = enabled
+    attribution.Visible = enabled
+    results.Visible = enabled
+    pageLabel.Text = totalPages and (tostring(page) .. "/" .. tostring(totalPages)) or ""
+    local previousEnabled = enabled and not loading and page > 1
+    local nextEnabled = enabled and not loading and totalPages ~= nil and page < totalPages
+    for _, item in ipairs({{previousPageButton, previousEnabled}, {nextPageButton, nextEnabled}}) do
+        local button, available = item[1], item[2]
+        button.Active = available
+        local icon = button:FindFirstChild("Icon")
+        if icon then
+            icon.ImageTransparency = available and 0 or 0.6
+        end
+    end
+end
+
+local function makePage(items)
+    local group = create("CanvasGroup", {
+        Name = "Page",
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(1, 1),
+        ZIndex = 2,
+    }, results)
+    local scroller = create("ScrollingFrame", {
+        Name = "Cards",
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(1, 1),
+        CanvasSize = UDim2.fromOffset(0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Theme.Divider,
+        VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
+        ZIndex = 2,
+    }, group)
+    local grid = create("UIGridLayout", {
+        CellPadding = UDim2.fromOffset(10, 10),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        FillDirection = Enum.FillDirection.Horizontal,
+        HorizontalAlignment = Enum.HorizontalAlignment.Left,
+        VerticalAlignment = Enum.VerticalAlignment.Top,
+    }, scroller)
+    local function layoutCards()
+        local width = math.max(0, scroller.AbsoluteSize.X - 5)
+        local columns = math.max(1, math.min(6, math.floor((width + 10) / 180)))
+        local cellWidth = math.max(1, math.floor((width - (columns - 1) * 10) / columns))
+        grid.CellSize = UDim2.fromOffset(cellWidth, math.floor(cellWidth * 9 / 16) + 48)
+        grid.FillDirectionMaxCells = columns
+    end
+    scroller:GetPropertyChangedSignal("AbsoluteSize"):Connect(layoutCards)
+    layoutCards()
+    for index, item in ipairs(items) do
+        local card = create("Frame", {
+            Name = "ScriptCard",
+            LayoutOrder = index,
+            BackgroundColor3 = Theme.Raised,
+            BorderSizePixel = 0,
+            ClipsDescendants = true,
+            ZIndex = 3,
+        }, scroller)
+        round(card, 8)
+        local image = create("ImageLabel", {
+            Name = "Thumbnail",
+            Size = UDim2.new(1, 0, 1, -48),
+            BackgroundColor3 = Theme.Window,
+            BorderSizePixel = 0,
+            Image = item.thumbnail,
+            ScaleType = Enum.ScaleType.Crop,
+            ZIndex = 4,
+        }, card)
+        round(image, 8)
+        create("TextLabel", {
+            Name = "Title",
+            Position = UDim2.new(0, 10, 1, -44),
+            Size = UDim2.new(1, -20, 0, 40),
+            BackgroundTransparency = 1,
+            Text = item.title,
+            TextColor3 = Theme.Text,
+            FontFace = Theme.Font,
+            TextSize = 13,
+            TextWrapped = true,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Center,
+            BorderSizePixel = 0,
+            ZIndex = 4,
+        }, card)
+    end
+    return group
+end
+
+local function presentPage(items, direction)
+    clearPageMotion()
+    local old = activePageView
+    local incoming = makePage(items)
+    activePageView = incoming
+    local distance = 22 * direction
+    incoming.Position = UDim2.fromOffset(distance, 0)
+    incoming.GroupTransparency = 1
+    local info = TweenInfo.new(0.24, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+    local show = TweenService:Create(incoming, info, {Position = UDim2.fromOffset(0, 0), GroupTransparency = 0})
+    table.insert(pageMotion, show)
+    if old then
+        outgoingPageView = old
+        local hide = TweenService:Create(old, info, {Position = UDim2.fromOffset(-distance, 0), GroupTransparency = 1})
+        table.insert(pageMotion, hide)
+        hide.Completed:Once(function()
+            if outgoingPageView == old then
+                outgoingPageView = nil
+                old:Destroy()
+            end
+        end)
+        hide:Play()
+    end
+    show:Play()
+end
+
+local function loadCatalogue(target, direction)
+    if not alive or selectedProvider ~= 3 or loading or target < 1 or (totalPages and target > totalPages) then
+        return
+    end
+    generation += 1
+    local token = generation
+    loading = true
+    retryPage = nil
+    feedback.Visible = not activePageView
+    feedback.BackgroundTransparency = 1
+    feedback.Text = "Loading..."
+    updatePagination()
+    task.spawn(function()
+        local cached = catalogCache[target]
+        local ok, data
+        if cached and os.clock() - cached.time < 45 then
+            ok, data = true, cached.data
+        else
+            ok, data = pcall(function()
+                local remote = ReplicatedStorage:FindFirstChild(CatalogRemote)
+                if not remote and RunService:IsStudio() then
+                    remote = ReplicatedStorage:WaitForChild(CatalogRemote, 4)
+                end
+                if remote and remote:IsA("RemoteFunction") then
+                    return remote:InvokeServer(target)
+                end
+                return fetchCatalogue(target)
+            end)
+        end
+        if not alive or token ~= generation or selectedProvider ~= 3 then
+            return
+        end
+        loading = false
+        if not ok or type(data) ~= "table" or type(data.items) ~= "table" or type(data.totalPages) ~= "number" then
+            retryPage = target
+            feedback.Text = "Couldn't load ScriptBlox. Click to retry."
+            feedback.Visible = true
+            feedback.BackgroundTransparency = activePageView and 0.1 or 1
+            if not ok then
+                warn("ScriptFinder catalogue: " .. tostring(data))
+            end
+            updatePagination()
+            return
+        end
+        totalPages = math.max(1, math.floor(data.totalPages))
+        if target > totalPages then
+            updatePagination()
+            loadCatalogue(totalPages, -1)
+            return
+        end
+        if not catalogCache[target] then
+            table.insert(cacheOrder, target)
+        end
+        catalogCache[target] = {data = data, time = os.clock()}
+        if #cacheOrder > 8 then
+            catalogCache[table.remove(cacheOrder, 1)] = nil
+        end
+        page = target
+        hasLoaded = true
+        gui:SetAttribute("Page", page)
+        gui:SetAttribute("TotalPages", totalPages)
+        feedback.Visible = #data.items == 0
+        feedback.Text = #data.items == 0 and "No scripts on this page." or ""
+        presentPage(data.items, direction)
+        updatePagination()
+    end)
+end
+
+changePage = function(direction)
+    if totalPages and not loading then
+        loadCatalogue(page + direction, direction)
+    end
+end
+
+bind(feedback.Activated, function()
+    if retryPage then
+        loadCatalogue(retryPage, retryPage > page and 1 or -1)
+    end
+end)
+
+local function switchCatalogue()
+    generation += 1
+    loading, hasLoaded, retryPage = false, false, nil
+    clearPageMotion()
+    if activePageView then
+        activePageView:Destroy()
+        activePageView = nil
+    end
+    page, totalPages = 1, nil
+    feedback.Visible = false
+    gui:SetAttribute("Page", 1)
+    gui:SetAttribute("TotalPages", nil)
+    updatePagination()
+    if selectedProvider == 3 then
+        loadCatalogue(1, 0)
+    end
+end
+
 local function layoutSearchBar()
     local width = content.AbsoluteSize.X
     local stacked = width < 470
@@ -621,6 +1034,9 @@ local function layoutSearchBar()
     local row = stacked and 60 or 12
     selector.Position = UDim2.new(1, -14, 0, row)
     navigation.Position = UDim2.new(1, -148, 0, row)
+    local top = row + 50
+    results.Position = UDim2.fromOffset(14, top)
+    results.Size = UDim2.new(1, -28, 1, -top - 26)
 end
 
 bind(content:GetPropertyChangedSignal("AbsoluteSize"), layoutSearchBar)
@@ -635,12 +1051,12 @@ end
 
 local function selectProvider(index, animated)
     local nextProvider = math.clamp(index, 1, #providers)
-    if selectedProvider ~= nextProvider then
-        page = 1
-        gui:SetAttribute("Page", page)
-    end
+    local changed = selectedProvider ~= nextProvider
     selectedProvider = nextProvider
     gui:SetAttribute("Provider", providers[selectedProvider].Name)
+    if changed then
+        switchCatalogue()
+    end
     stopSelectorTween()
     local target = UDim2.fromOffset(3 + (selectedProvider - 1) * 40, 3)
     if animated then
@@ -1088,6 +1504,9 @@ end)
 
 bind(dotButton.Activated, function()
     setMode(restoreMode)
+    if selectedProvider == 3 and not hasLoaded and not loading then
+        loadCatalogue(1, 0)
+    end
 end)
 
 bind(minimizeButton.Activated, function()
@@ -1104,6 +1523,11 @@ end)
 
 bind(gui.Destroying, function()
     alive = false
+    generation += 1
+    for _, tween in ipairs(pageMotion) do
+        tween:Cancel()
+    end
+    table.clear(pageMotion)
     gesture = nil
     selectorGesture = nil
     stopSelectorTween()
@@ -1119,4 +1543,6 @@ bind(gui.Destroying, function()
     table.clear(hoverTweens)
 end)
 
+selectProvider(selectedProvider, false)
+updatePagination()
 render()
