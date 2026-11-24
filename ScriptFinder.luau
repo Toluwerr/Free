@@ -213,8 +213,20 @@ local function summaryFor(item)
     }
 end
 
-local function fetchCatalogue(target, placeId)
-    local url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d&sortBy=createdAt&order=desc", target, PageSize)
+local function normalizeSearch(value)
+    local query = plainText(value, 120)
+    return query and query:match("^%s*(.-)%s*$") or ""
+end
+
+local function fetchCatalogue(target, placeId, query)
+    query = normalizeSearch(query)
+    local url
+    if query ~= "" then
+        url = string.format("https://scriptblox.com/api/script/search?q=%s&page=%d&max=%d&strict=false&sortBy=accuracy&order=desc",
+            HttpService:UrlEncode(query), target, PageSize)
+    else
+        url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d&sortBy=createdAt&order=desc", target, PageSize)
+    end
     if placeId ~= nil then
         local id = numericId(placeId)
         if not id then
@@ -385,8 +397,18 @@ if RunService:IsServer() then
         local isComments = type(target) == "table" and target.action == "comments"
         local isCode = type(target) == "table" and target.action == "code"
         local isGame = type(target) == "table" and target.action == "game"
+        local isSearch = type(target) == "table" and target.action == "search"
         local isDetail = type(target) == "string"
-        if isGame then
+        if isSearch then
+            if type(target.query) ~= "string" or #target.query > 480
+                or normalizeSearch(target.query) == "" or normalizeSearch(target.query) ~= target.query
+                or type(target.page) ~= "number" or target.page < 1
+                or target.page > 1000000 or target.page ~= math.floor(target.page)
+                or type(target.gameOnly) ~= "boolean"
+                or (target.gameOnly and not numericId(game.PlaceId)) then
+                return {error = "Invalid search request"}
+            end
+        elseif isGame then
             if type(target.page) ~= "number" or target.page < 1
                 or target.page > 1000000 or target.page ~= math.floor(target.page)
                 or not numericId(game.PlaceId) then
@@ -408,13 +430,15 @@ if RunService:IsServer() then
         elseif type(target) ~= "number" or target ~= target or target < 1 or target > 1000000 or target ~= math.floor(target) then
             return {error = "Invalid page"}
         end
-        local key = isCode and ("code:" .. target.id)
+        local key = isSearch and ("search:" .. (target.gameOnly and tostring(game.PlaceId) or "all")
+                .. ":" .. tostring(target.page) .. ":" .. target.query)
+            or (isCode and ("code:" .. target.id))
             or (isComments and ("comments:" .. target.id .. ":" .. tostring(target.page)))
             or (isGame and ("game:" .. tostring(game.PlaceId) .. ":" .. tostring(target.page))) or target
         local now = os.clock()
         local activity = recent[player] or {}
         recent[player] = activity
-        local kind = isCode and "code" or (isComments and "comments" or (isDetail and "detail" or (isGame and "game" or "page")))
+        local kind = isSearch and "search" or (isCode and "code" or (isComments and "comments" or (isDetail and "detail" or (isGame and "game" or "page"))))
         if now - (activity[kind] or -math.huge) < (isCode and 0.6 or (isDetail and 0.25 or 0.5)) then
             return {error = "Please try again"}
         end
@@ -435,7 +459,9 @@ if RunService:IsServer() then
         requests += 1
         pending[key] = true
         local ok, data
-        if isGame then
+        if isSearch then
+            ok, data = pcall(fetchCatalogue, target.page, target.gameOnly and game.PlaceId or nil, target.query)
+        elseif isGame then
             ok, data = pcall(fetchCatalogue, target.page, game.PlaceId)
         elseif isCode then
             ok, data = pcall(fetchCode, target.id)
@@ -934,6 +960,8 @@ local page = 1
 local totalPages
 local changePage
 local catalogueScope = "all"
+local searchState = {query = "", ticket = 0}
+local layoutSearchBar
 
 gui:SetAttribute("Provider", providers[selectedProvider].Name)
 gui:SetAttribute("Page", page)
@@ -1067,41 +1095,49 @@ local shortcuts = create("Frame", {
     ZIndex = 4,
 }, content)
 
-local function shortcut(name, labelWidth, iconName)
+local function shortcut(name, iconName)
     local button = create("TextButton", {
         Name = name,
-        Size = UDim2.fromOffset(labelWidth, 38),
+        Size = UDim2.fromOffset(32, 38),
         BackgroundColor3 = Theme.Raised,
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         AutoButtonColor = false,
-        FontFace = Theme.Font,
-        Text = name,
-        TextColor3 = Theme.Text,
-        TextSize = 13,
+        Text = "",
         ZIndex = 5,
     }, shortcuts)
     round(button, 7)
     local icon = lucideIcon(button, iconName, 18, Theme.Text, 6)
-    icon.Visible = false
     bind(button.MouseEnter, function()
         hover(button, 0)
     end)
     bind(button.MouseLeave, function()
         hover(button, button:GetAttribute("Selected") and 0 or 1)
     end)
-    return function(x, compact)
-        local width = compact and 32 or labelWidth
+    return function(x)
         button.Position = UDim2.fromOffset(x, 0)
-        button.Size = UDim2.fromOffset(width, 38)
-        button.Text = compact and "" or name
-        icon.Visible = compact
-        return width
+        return 32
     end, button
 end
 
-local favoriteShortcut, favoriteShortcutButton = shortcut("Favorites", 74, "star")
-local gameShortcut, gameShortcutButton = shortcut("Game", 50, "gamepad-2")
+local favoriteShortcut, favoriteShortcutButton = shortcut("Favorites", "star")
+local gameShortcut, gameShortcutButton = shortcut("Game", "gamepad-2")
+
+local scopeBack = create("TextButton", {
+    Name = "CatalogueBack",
+    Position = UDim2.fromOffset(14, 15),
+    Size = UDim2.fromOffset(32, 32),
+    BackgroundColor3 = Theme.Raised,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "",
+    Visible = false,
+    ZIndex = 5,
+}, content)
+round(scopeBack, 7)
+lucideIcon(scopeBack, "arrow-left", 18, Theme.Text, 6)
+bind(scopeBack.MouseEnter, function() hover(scopeBack, 0.24) end)
+bind(scopeBack.MouseLeave, function() hover(scopeBack, 0) end)
 
 local function updateShortcuts()
     for _, entry in ipairs({{favoriteShortcutButton, "favorites"}, {gameShortcutButton, "game"}}) do
@@ -1110,7 +1146,6 @@ local function updateShortcuts()
         local color = selected and Theme.Accent or Theme.Text
         button:SetAttribute("Selected", selected)
         button.Active = selectedProvider == 3
-        button.TextColor3 = color
         local icon = button:FindFirstChild("Icon")
         if icon then
             icon.ImageColor3 = color
@@ -1258,13 +1293,25 @@ function favorites.toggle(item)
     gui:SetAttribute("FavoriteCount", #favorites.order)
 end
 
-function favorites.page(target)
-    local pages = math.max(1, math.ceil(#favorites.order / PageSize))
+function favorites.page(target, query)
+    local order = favorites.order
+    query = normalizeSearch(query):lower()
+    if query ~= "" then
+        order = {}
+        for _, id in ipairs(favorites.order) do
+            local saved = favorites.entries[id]
+            if saved and (saved.title:lower():find(query, 1, true)
+                or saved.slug:lower():find(query, 1, true)) then
+                table.insert(order, id)
+            end
+        end
+    end
+    local pages = math.max(1, math.ceil(#order / PageSize))
     local items = {}
     local first = (target - 1) * PageSize + 1
-    local last = math.min(#favorites.order, first + PageSize - 1)
+    local last = math.min(#order, first + PageSize - 1)
     for index = first, last do
-        local saved = favorites.entries[favorites.order[index]]
+        local saved = favorites.entries[order[index]]
         if saved then
             local item = table.clone(saved)
             item.missingMetrics = {views = true, executions = true, likes = true}
@@ -1296,6 +1343,7 @@ end
 local function updatePagination()
     updateShortcuts()
     local enabled = selectedProvider == 3 and not detailView
+    scopeBack.Visible = enabled and (catalogueScope ~= "all" or searchState.query ~= "")
     navigation.Visible = not detailView
     selector.Visible = not detailView
     if detailView then
@@ -1799,6 +1847,9 @@ local function requestData(target)
     end
     if type(target) == "table" and target.action == "code" then
         return fetchCode(target.id)
+    end
+    if type(target) == "table" and target.action == "search" then
+        return fetchCatalogue(target.page, target.gameOnly and game.PlaceId or nil, target.query)
     end
     if type(target) == "table" and target.action == "game" then
         return fetchCatalogue(target.page, game.PlaceId)
@@ -2524,6 +2575,7 @@ local function loadCatalogue(target, direction)
     generation += 1
     local token = generation
     local scope = catalogueScope
+    local query = searchState.query
     loading = true
     retryPage = nil
     feedback.Visible = not activePageView
@@ -2534,13 +2586,16 @@ local function loadCatalogue(target, direction)
         lastCatalogueRequest = os.clock()
         local ok, data
         if scope == "favorites" then
-            ok, data = pcall(favorites.page, target)
+            ok, data = pcall(favorites.page, target, query)
+        elseif query ~= "" then
+            ok, data = pcall(requestData, {action = "search", page = target, query = query, gameOnly = scope == "game"})
         elseif scope == "game" then
             ok, data = pcall(requestData, {action = "game", page = target})
         else
             ok, data = pcall(requestData, target)
         end
-        if not alive or token ~= generation or selectedProvider ~= 3 or scope ~= catalogueScope then
+        if not alive or token ~= generation or selectedProvider ~= 3
+            or scope ~= catalogueScope or query ~= searchState.query then
             return
         end
         loading = false
@@ -2567,7 +2622,8 @@ local function loadCatalogue(target, direction)
         gui:SetAttribute("Page", page)
         gui:SetAttribute("TotalPages", totalPages)
         feedback.Visible = #data.items == 0
-        local empty = scope == "favorites" and "No favorites yet."
+        local empty = query ~= "" and "No matching scripts."
+            or (scope == "favorites" and "No favorites yet.")
             or (scope == "game" and "No scripts found for this place." or "No scripts on this page.")
         feedback.Text = #data.items == 0 and empty or ""
         presentPage(data.items, direction, target)
@@ -2578,7 +2634,8 @@ end
 
 requestFreshCatalogue = function(interval)
     if not alive or selectedProvider ~= 3 or loading or detailView
-        or not content.Visible or not results.Visible then
+        or not content.Visible or not results.Visible
+        or normalizeSearch(searchInput.Text) ~= searchState.query then
         return
     end
     if not activePageView and not retryPage then
@@ -2608,30 +2665,69 @@ bind(feedback.Activated, function()
     end
 end)
 
-local function switchCatalogue(scope)
+local function switchCatalogue(scope, preserveSearch)
     if detailView then
         closeDetails()
     end
     catalogueScope = scope or "all"
+    if not preserveSearch then
+        searchState.ticket += 1
+        searchState.query = ""
+        searchInput.Text = ""
+    end
     gui:SetAttribute("CatalogueScope", catalogueScope)
+    gui:SetAttribute("SearchQuery", searchState.query)
     generation += 1
     loading, hasLoaded, retryPage = false, false, nil
     clearPageMotion()
-    if activePageView then
-        activePageView:Destroy()
-        activePageView = nil
+    if not preserveSearch then
+        if activePageView then
+            activePageView:Destroy()
+            activePageView = nil
+        end
+        table.clear(activeCards)
+        displayedPage = nil
     end
-    table.clear(activeCards)
-    displayedPage = nil
     page, totalPages = 1, nil
     feedback.Visible = false
     gui:SetAttribute("Page", 1)
     gui:SetAttribute("TotalPages", nil)
     updatePagination()
+    if layoutSearchBar then layoutSearchBar() end
     if selectedProvider == 3 then
         loadCatalogue(1, 0)
     end
 end
+
+local function submitSearch()
+    if not alive or selectedProvider ~= 3 or detailView then return end
+    local query = normalizeSearch(searchInput.Text)
+    if query == searchState.query then return end
+    searchState.ticket += 1
+    searchState.query = query
+    switchCatalogue(catalogueScope, true)
+end
+
+bind(searchInput:GetPropertyChangedSignal("Text"), function()
+    searchState.ticket += 1
+    local ticket = searchState.ticket
+    task.delay(0.65, function()
+        if alive and ticket == searchState.ticket then
+            submitSearch()
+        end
+    end)
+end)
+
+bind(searchInput.FocusLost, function(enterPressed)
+    if enterPressed then submitSearch() end
+end)
+
+bind(scopeBack.Activated, function()
+    if selectedProvider == 3 and not detailView then
+        searchInput:ReleaseFocus()
+        switchCatalogue("all")
+    end
+end)
 
 bind(favoriteShortcutButton.Activated, function()
     if selectedProvider == 3 and not detailView then
@@ -2645,20 +2741,23 @@ bind(gameShortcutButton.Activated, function()
     end
 end)
 
-local function layoutSearchBar()
+layoutSearchBar = function()
     local width = content.AbsoluteSize.X
     local stacked = width < 470
-    local available = math.max(0, width - (stacked and 28 or 286))
-    local iconsOnly = available < 280 + 8 + 74 + 6 + 50
-    local shortcutsWidth = iconsOnly and 70 or 130
+    local hasBack = selectedProvider == 3 and (catalogueScope ~= "all" or searchState.query ~= "")
+    local inset = hasBack and 40 or 0
+    local available = math.max(0, width - (stacked and 28 or 286) - inset)
+    local shortcutsWidth = 70
     local searchWidth = math.max(0, math.min(280, available - 8 - shortcutsWidth))
+    scopeBack.Visible = hasBack and not detailView
+    searchPill.Position = UDim2.fromOffset(14 + inset, 12)
     searchPill.Size = UDim2.fromOffset(searchWidth, 38)
     searchPill.Visible = searchWidth >= 64
-    shortcuts.Position = UDim2.fromOffset(14 + searchWidth + 8, 12)
+    shortcuts.Position = UDim2.fromOffset(14 + inset + searchWidth + 8, 12)
     shortcuts.Size = UDim2.fromOffset(shortcutsWidth, 38)
     shortcuts.Visible = searchWidth >= 64
-    local favoriteWidth = favoriteShortcut(0, iconsOnly)
-    gameShortcut(favoriteWidth + 6, iconsOnly)
+    local favoriteWidth = favoriteShortcut(0)
+    gameShortcut(favoriteWidth + 6)
     local row = stacked and 60 or 12
     selector.Position = UDim2.new(1, -14, 0, row)
     navigation.Position = UDim2.new(1, -148, 0, row)
