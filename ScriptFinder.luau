@@ -49,45 +49,6 @@ local function remoteImageUrl(value)
     return nil
 end
 
-local function imageProxyUrl(source, kind)
-    local width = kind == "avatar" and 96 or 320
-    local height = kind == "avatar" and 96 or 180
-    return "https://wsrv.nl/?url=" .. HttpService:UrlEncode(source)
-        .. "&output=png&w=" .. width .. "&h=" .. height .. "&fit=inside"
-end
-
-local function fetchImageBytes(source, kind)
-    local url = imageProxyUrl(source, kind)
-    local body
-    if RunService:IsServer() then
-        body = HttpService:GetAsync(url, false, {Accept = "image/png"})
-    else
-        local executorRequest = request or http_request
-            or (syn and syn.request) or (http and http.request)
-        if type(executorRequest) == "function" then
-            local success, response = pcall(executorRequest, {
-                Url = url,
-                Method = "GET",
-                Headers = {Accept = "image/png"},
-            })
-            if success and type(response) == "table" then
-                local status = tonumber(response.StatusCode or response.Status or response.status_code)
-                if not status or (status >= 200 and status < 300) then
-                    body = response.Body or response.body
-                end
-            end
-        end
-        if type(body) ~= "string" then
-            body = game:HttpGet(url)
-        end
-    end
-    if type(body) ~= "string" or #body < 40 or #body > 1400000
-        or body:sub(1, 8) ~= "\137PNG\r\n\26\n" then
-        error("Invalid image response", 0)
-    end
-    return body
-end
-
 local function imageAsset(value)
     if type(value) == "number" then
         local id = numericId(value)
@@ -313,75 +274,50 @@ if RunService:IsServer() then
     end
     assert(remote:IsA("RemoteFunction"), "Invalid catalogue remote")
     local cache, order, recent, pending = {}, {}, {}, {}
-    local windowStart, requests, imageRequests = os.clock(), 0, 0
+    local windowStart, requests = os.clock(), 0
     remote.OnServerInvoke = function(player, target)
-        local isImage = type(target) == "table" and target.action == "image"
-        local imageSource, imageSize
         local isDetail = type(target) == "string"
-        if isImage then
-            imageSource = remoteImageUrl(target.url)
-            imageSize = target.size
-            if not imageSource or (imageSize ~= "thumbnail" and imageSize ~= "avatar") then
-                return {error = "Invalid image request"}
-            end
-        elseif isDetail then
+        if isDetail then
             if not identifier(target) then
                 return {error = "Invalid script identifier"}
             end
         elseif type(target) ~= "number" or target ~= target or target < 1 or target > 1000000 or target ~= math.floor(target) then
             return {error = "Invalid page"}
         end
-        local key = isImage and ("image:" .. imageSize .. ":" .. imageSource) or target
         local now = os.clock()
         local activity = recent[player] or {}
         recent[player] = activity
-        local kind = isImage and "image" or (isDetail and "detail" or "page")
-        local delay = isImage and 0 or (isDetail and 0.25 or 0.5)
-        if now - (activity[kind] or -math.huge) < delay then
+        local kind = isDetail and "detail" or "page"
+        if now - (activity[kind] or -math.huge) < (isDetail and 0.25 or 0.5) then
             return {error = "Please try again"}
         end
         activity[kind] = now
-        local entry = cache[key]
-        if entry and now - entry.time < (isImage and 180 or (isDetail and 45 or 2)) then
+        local entry = cache[target]
+        if entry and now - entry.time < (isDetail and 45 or 2) then
             return entry.data
         end
-        if pending[key] then
+        if pending[target] then
             return {error = "Already loading"}
         end
         if now - windowStart >= 60 then
-            windowStart, requests, imageRequests = now, 0, 0
+            windowStart, requests = now, 0
         end
-        if isImage then
-            if imageRequests >= 110 then
-                return {error = "Image request limit reached"}
-            end
-            imageRequests += 1
-        else
-            if requests >= 45 then
-                return {error = "Request limit reached"}
-            end
-            requests += 1
+        if requests >= 45 then
+            return {error = "Request limit reached"}
         end
-        pending[key] = true
-        local ok, data
-        if isImage then
-            ok, data = pcall(fetchImageBytes, imageSource, imageSize)
-            if ok then
-                data = {png = data}
-            end
-        else
-            ok, data = pcall(isDetail and fetchDetails or fetchCatalogue, target)
-        end
-        pending[key] = nil
+        requests += 1
+        pending[target] = true
+        local ok, data = pcall(isDetail and fetchDetails or fetchCatalogue, target)
+        pending[target] = nil
         if not ok then
             warn("ScriptFinder: " .. tostring(data))
-            return {error = isImage and "Server image request failed" or "Server HTTP request failed; see server output"}
+            return {error = "Server HTTP request failed; see server output"}
         end
-        if not cache[key] then
-            table.insert(order, key)
+        if not cache[target] then
+            table.insert(order, target)
         end
-        cache[key] = {time = os.clock(), data = data}
-        if #order > 88 then
+        cache[target] = {time = os.clock(), data = data}
+        if #order > 64 then
             cache[table.remove(order, 1)] = nil
         end
         return data
@@ -540,272 +476,6 @@ local function bind(signal, callback)
     local connection = signal:Connect(callback)
     table.insert(connections, connection)
     return connection
-end
-
-local function inflateImage(z, maxOutput)
-    if #z < 6 or z:byte(1) % 16 ~= 8 then error("Invalid image compression") end
-    local pos, accumulator, available = 3, 0, 0
-    local output, length = buffer.create(maxOutput), 0
-    local nextYield = os.clock() + 0.004
-    local function bits(count)
-        while available < count do
-            local nextByte = z:byte(pos)
-            if not nextByte then error("Incomplete image compression") end
-            accumulator += nextByte * 2 ^ available
-            available += 8
-            pos += 1
-        end
-        local value = accumulator % 2 ^ count
-        accumulator = math.floor(accumulator / 2 ^ count)
-        available -= count
-        return value
-    end
-    local function put(byte)
-        if length >= maxOutput then error("Image exceeds size limit") end
-        buffer.writeu8(output, length, byte)
-        length += 1
-        if length % 8192 == 0 and os.clock() >= nextYield then
-            task.wait()
-            nextYield = os.clock() + 0.004
-        end
-    end
-    local function tree(lengths)
-        local counts, nextCode, symbols = {}, {}, {}
-        local maxLen = 0
-        for i = 1, #lengths do
-            local n = lengths[i]
-            if n > 0 then
-                counts[n] = (counts[n] or 0) + 1
-                maxLen = math.max(maxLen, n)
-            end
-        end
-        local code = 0
-        for n = 1, maxLen do
-            code = (code + (counts[n - 1] or 0)) * 2
-            nextCode[n] = code
-        end
-        for sym = 0, #lengths - 1 do
-            local n = lengths[sym + 1]
-            if n > 0 then
-                symbols[2 ^ n + nextCode[n]] = sym
-                nextCode[n] += 1
-            end
-        end
-        return {lookup = symbols, maxLen = maxLen}
-    end
-    local function readSymbol(huff)
-        local code = 0
-        for n = 1, huff.maxLen do
-            code = code * 2 + bits(1)
-            local sym = huff.lookup[2 ^ n + code]
-            if sym ~= nil then return sym end
-        end
-        error("Corrupt compressed image")
-    end
-    local lengthBase = {3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258}
-    local lengthExtra = {0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0}
-    local distanceBase = {1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577}
-    local distanceExtra = {0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13}
-    local fixedLengths, fixedDists = {}, {}
-    for i = 0, 287 do
-        fixedLengths[i + 1] = i <= 143 and 8 or (i <= 255 and 9 or (i <= 279 and 7 or 8))
-    end
-    for i = 1, 32 do fixedDists[i] = 5 end
-    local fixedLiteral, fixedDistance = tree(fixedLengths), tree(fixedDists)
-    local codeOrder = {16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15}
-    while true do
-        local isFinal = bits(1) == 1
-        local blockType = bits(2)
-        if blockType == 0 then
-            accumulator, available = 0, 0
-            local n = bits(16)
-            local complement = bits(16)
-            if n + complement ~= 65535 then error("Invalid image block") end
-            for _ = 1, n do put(bits(8)) end
-        else
-            if blockType == 3 then error("Unsupported image block") end
-            local literal, distance
-            if blockType == 1 then
-                literal, distance = fixedLiteral, fixedDistance
-            else
-                local litCount, distCount, codeCount = bits(5) + 257, bits(5) + 1, bits(4) + 4
-                local codeLengths = {}
-                for i = 1, 19 do codeLengths[i] = 0 end
-                for i = 1, codeCount do codeLengths[codeOrder[i] + 1] = bits(3) end
-                local codeTree = tree(codeLengths)
-                local lengths = {}
-                while #lengths < litCount + distCount do
-                    local symbol = readSymbol(codeTree)
-                    if symbol < 16 then
-                        lengths[#lengths + 1] = symbol
-                    else
-                        local count, value
-                        if symbol == 16 then
-                            if #lengths == 0 then error("Invalid image repeat") end
-                            count, value = bits(2) + 3, lengths[#lengths]
-                        elseif symbol == 17 then
-                            count, value = bits(3) + 3, 0
-                        else
-                            count, value = bits(7) + 11, 0
-                        end
-                        if #lengths + count > litCount + distCount then error("Excess image code lengths") end
-                        for _ = 1, count do lengths[#lengths + 1] = value end
-                    end
-                end
-                local literalLengths, distanceLengths = {}, {}
-                for i = 1, litCount do literalLengths[i] = lengths[i] end
-                for i = 1, distCount do distanceLengths[i] = lengths[litCount + i] end
-                literal, distance = tree(literalLengths), tree(distanceLengths)
-            end
-            while true do
-                local sym = readSymbol(literal)
-                if sym == 256 then break end
-                if sym < 256 then
-                    put(sym)
-                else
-                    local idx = sym - 256
-                    local n = lengthBase[idx]
-                    if not n then error("Invalid image match length") end
-                    n += bits(lengthExtra[idx])
-                    local distanceSymbol = readSymbol(distance) + 1
-                    local back = distanceBase[distanceSymbol]
-                    if not back then error("Invalid image distance") end
-                    back += bits(distanceExtra[distanceSymbol])
-                    if back > length then error("Invalid image match") end
-                    for _ = 1, n do put(buffer.readu8(output, length - back)) end
-                end
-            end
-        end
-        if isFinal then break end
-    end
-    return output
-end
-
-local function decodeImagePng(data)
-    if data:sub(1, 8) ~= "\137PNG\r\n\26\n" or #data > 1400000 then error("Invalid PNG") end
-    local function u32(index)
-        local a, b, c, d = data:byte(index, index + 3)
-        if not d then error("Truncated image") end
-        return ((a * 256 + b) * 256 + c) * 256 + d
-    end
-    local position, width, height, depth, color, interlace = 9
-    local palette, transparency, chunks = nil, nil, {}
-    while position < #data - 8 do
-        local chunkSize = u32(position)
-        local name = data:sub(position + 4, position + 7)
-        if chunkSize > 1400000 or position + 11 + chunkSize > #data then
-            error("Invalid image chunk")
-        end
-        local body = data:sub(position + 8, position + 7 + chunkSize)
-        if name == "IHDR" then
-            if chunkSize ~= 13 then error("Invalid image header") end
-            width, height = u32(position + 8), u32(position + 12)
-            depth, color, interlace = data:byte(position + 16), data:byte(position + 17), data:byte(position + 20)
-        elseif name == "IDAT" then
-            chunks[#chunks + 1] = body
-        elseif name == "PLTE" then
-            palette = body
-        elseif name == "tRNS" then
-            transparency = body
-        elseif name == "IEND" then
-            break
-        end
-        position += chunkSize + 12
-    end
-    if not width or width < 1 or width > 512 or height < 1 or height > 512 or interlace ~= 0 then
-        error("Unsupported image dimensions")
-    end
-    if color ~= 0 and color ~= 2 and color ~= 3 and color ~= 4 and color ~= 6 then
-        error("Unsupported image color format")
-    end
-    if depth ~= 8 and not ((color == 0 or color == 3) and (depth == 1 or depth == 2 or depth == 4)) then
-        error("Unsupported image bit depth")
-    end
-    local channels = color == 2 and 3 or (color == 4 and 2 or (color == 6 and 4 or 1))
-    local pixelBits = channels * depth
-    local rowBytes = math.ceil(width * pixelBits / 8)
-    local byteStride = math.max(1, math.ceil(pixelBits / 8))
-    local raw = inflateImage(table.concat(chunks), height * (rowBytes + 1))
-    if buffer.len(raw) ~= height * (rowBytes + 1) then error("Incomplete image") end
-    local pixels = buffer.create(width * height * 4)
-    local previous, row = buffer.create(rowBytes), buffer.create(rowBytes)
-    local readByte, writeByte, writeWord = buffer.readu8, buffer.writeu8, buffer.writeu32
-    local offset, writeOffset = 0, 0
-    local nextYield = os.clock() + 0.004
-    local transparentGray, transparentRed, transparentGreen, transparentBlue
-    if color == 0 and transparency and #transparency >= 2 then
-        transparentGray = transparency:byte(2)
-    end
-    if color == 2 and transparency and #transparency >= 6 then
-        transparentRed, transparentGreen, transparentBlue = transparency:byte(2), transparency:byte(4), transparency:byte(6)
-    end
-    local function writePixel(r, g, b, a)
-        writeWord(pixels, writeOffset, r + g * 256 + b * 65536 + a * 16777216)
-        writeOffset += 4
-    end
-    for y = 1, height do
-        local filter = readByte(raw, offset)
-        if filter > 4 then error("Invalid image filter") end
-        offset += 1
-        for x = 0, rowBytes - 1 do
-            local left = x >= byteStride and readByte(row, x - byteStride) or 0
-            local up = readByte(previous, x)
-            local upperLeft = x >= byteStride and readByte(previous, x - byteStride) or 0
-            local value = readByte(raw, offset)
-            offset += 1
-            if filter == 1 then
-                value += left
-            elseif filter == 2 then
-                value += up
-            elseif filter == 3 then
-                value += math.floor((left + up) / 2)
-            elseif filter == 4 then
-                local predictor = left + up - upperLeft
-                local da = math.abs(predictor - left)
-                local db = math.abs(predictor - up)
-                local dc = math.abs(predictor - upperLeft)
-                value += (da <= db and da <= dc and left or (db <= dc and up or upperLeft))
-            end
-            writeByte(row, x, value % 256)
-        end
-        for x = 1, width do
-            if color == 6 then
-                local n = (x - 1) * 4
-                writePixel(readByte(row, n), readByte(row, n + 1), readByte(row, n + 2), readByte(row, n + 3))
-            elseif color == 2 then
-                local n = (x - 1) * 3
-                local r, g, b = readByte(row, n), readByte(row, n + 1), readByte(row, n + 2)
-                writePixel(r, g, b, r == transparentRed and g == transparentGreen and b == transparentBlue and 0 or 255)
-            elseif color == 4 then
-                local n = (x - 1) * 2
-                local gray = readByte(row, n)
-                writePixel(gray, gray, gray, readByte(row, n + 1))
-            else
-                local sample
-                if depth == 8 then
-                    sample = readByte(row, x - 1)
-                else
-                    local bitIndex = (x - 1) * depth
-                    sample = math.floor(readByte(row, math.floor(bitIndex / 8)) / 2 ^ (8 - depth - bitIndex % 8)) % 2 ^ depth
-                end
-                if color == 0 then
-                    local gray = depth == 8 and sample or math.floor(sample * 255 / (2 ^ depth - 1) + 0.5)
-                    writePixel(gray, gray, gray, sample == transparentGray and 0 or 255)
-                else
-                    local n = sample * 3 + 1
-                    if not palette or n + 2 > #palette then error("Invalid image palette") end
-                    writePixel(palette:byte(n), palette:byte(n + 1), palette:byte(n + 2),
-                        transparency and transparency:byte(sample + 1) or 255)
-                end
-            end
-        end
-        previous, row = row, previous
-        if y % 4 == 0 and os.clock() >= nextYield then
-            task.wait()
-            nextYield = os.clock() + 0.004
-        end
-    end
-    return Vector2.new(width, height), pixels
 end
 
 local function line(parent, x1, y1, x2, y2, thickness, transparency, color)
@@ -1400,101 +1070,136 @@ local function formatCounter(n)
     return tostring(n)
 end
 
-local imageCache, imageQueue, imageDecodeQueue = {}, {}, {}
+local fileAsset = type(getcustomasset) == "function" and getcustomasset
+    or (type(getsynasset) == "function" and getsynasset)
+local fileImagesAvailable = type(fileAsset) == "function"
+    and type(isfile) == "function"
+    and type(isfolder) == "function"
+    and type(makefolder) == "function"
+    and type(writefile) == "function"
+local imageRoot, imageDirectory = "ScriptFinder", "ScriptFinder/Images"
+local imageCache, imageQueue = {}, {}
 local imageBindings = setmetatable({}, {__mode = "k"})
-local imageCacheSize, activeImageFetches, activeImageDecodes = 0, 0, 0
-local pumpImageQueue, pumpImageDecodes
+local activeImageLoads, imageFolderReady = 0, false
+local pumpImageQueue
 
-local function requestImagePng(source, kind)
-    local remote = ReplicatedStorage:FindFirstChild(CatalogRemote)
-    if RunService:IsStudio() then
-        remote = remote or ReplicatedStorage:WaitForChild(CatalogRemote, 8)
+local function makeImageDirectory()
+    if not fileImagesAvailable then return false end
+    if imageFolderReady then return true end
+    local ok = pcall(function()
+        if not isfolder(imageRoot) then makefolder(imageRoot) end
+        if not isfolder(imageDirectory) then makefolder(imageDirectory) end
+        assert(isfolder(imageDirectory))
+    end)
+    imageFolderReady = ok
+    return ok
+end
+
+local function imageFileBase(url)
+    local a, b = 5381, 2166136261
+    for i = 1, #url do
+        local c = url:byte(i)
+        a = (a * 33 + c) % 4294967296
+        b = (b * 16777619 + c) % 4294967296
     end
-    if remote and remote:IsA("RemoteFunction") then
-        local response = remote:InvokeServer({action = "image", url = source, size = kind})
-        if type(response) ~= "table" or type(response.png) ~= "string" then
-            error(type(response) == "table" and response.error or "Invalid image transfer", 0)
+    return imageDirectory .. "/" .. string.format("%08x%08x", a, b)
+end
+
+local function imageFileType(bytes)
+    if type(bytes) ~= "string" or #bytes < 64 or #bytes > 12000000 then
+        return nil
+    end
+    if bytes:sub(1, 8) == "\137PNG\r\n\26\n" then
+        return ".png"
+    end
+    if bytes:byte(1) == 255 and bytes:byte(2) == 216 and bytes:byte(3) == 255 then
+        return ".jpg"
+    end
+    if bytes:sub(1, 4) == "RIFF" and bytes:sub(9, 12) == "WEBP" then
+        return ".webp"
+    end
+    if bytes:sub(1, 6) == "GIF89a" or bytes:sub(1, 6) == "GIF87a" then
+        return ".gif"
+    end
+    return nil
+end
+
+local function imageFromDisk(source)
+    if not makeImageDirectory() then error("Image file support unavailable", 0) end
+    local base = imageFileBase(source)
+    for _, extension in ipairs({".png", ".jpg", ".webp", ".gif"}) do
+        local path = base .. extension
+        if isfile(path) then
+            local success, asset = pcall(fileAsset, path)
+            if success and type(asset) == "string" and asset ~= "" then
+                return asset
+            end
         end
-        return response.png
     end
-    return fetchImageBytes(source, kind)
+    local ok, bytes = pcall(function()
+        return game:HttpGet(source)
+    end)
+    if not ok or type(bytes) ~= "string" or not imageFileType(bytes) then
+        local send = type(request) == "function" and request
+            or (type(http_request) == "function" and http_request)
+            or (syn and type(syn.request) == "function" and syn.request)
+        if type(send) == "function" then
+            local good, reply = pcall(send, {Url = source, Method = "GET"})
+            if good and type(reply) == "table" then
+                local code = tonumber(reply.StatusCode or reply.Status or reply.status_code)
+                if not code or (code >= 200 and code < 300) then
+                    bytes = reply.Body or reply.body
+                end
+            end
+        end
+    end
+    local extension = imageFileType(bytes)
+    if not extension then error("Unsupported or invalid image response", 0) end
+    local filePath = base .. extension
+    local saved, errorText = pcall(writefile, filePath, bytes)
+    if not saved or not isfile(filePath) then
+        error(saved and "Image could not be saved" or tostring(errorText), 0)
+    end
+    local asset = fileAsset(filePath)
+    if type(asset) ~= "string" or asset == "" then error("Custom image asset unavailable", 0) end
+    return asset
 end
 
 local function imagePriority(entry)
-    local priority = 0
+    local score = 0
     for label in pairs(entry.pending) do
         if label:IsDescendantOf(gui) then
             if detailView and label:IsDescendantOf(detailView) then
                 return 4
             end
             if label:IsDescendantOf(results) and not results.Visible then
-                priority = math.max(priority, 1)
+                score = math.max(score, 1)
                 continue
             end
-            local scroller = label:FindFirstAncestorWhichIsA("ScrollingFrame")
-            if scroller then
-                local top = scroller.AbsolutePosition.Y
-                local bottom = top + scroller.AbsoluteSize.Y
+            local scroll = label:FindFirstAncestorWhichIsA("ScrollingFrame")
+            if scroll then
                 local y = label.AbsolutePosition.Y
-                if scroller.AbsoluteSize.Y > 0 and label.AbsoluteSize.Y > 0
-                    and y + label.AbsoluteSize.Y >= top - 24 and y <= bottom + 24 then
-                    priority = math.max(priority, 3)
+                local top = scroll.AbsolutePosition.Y
+                local bottom = top + scroll.AbsoluteSize.Y
+                if label.AbsoluteSize.Y <= 0 or scroll.AbsoluteSize.Y <= 0 then
+                    score = math.max(score, 2)
+                elseif y + label.AbsoluteSize.Y >= top - 32 and y <= bottom + 32 then
+                    score = math.max(score, 3)
                 else
-                    priority = math.max(priority, 1)
+                    score = math.max(score, 1)
                 end
             else
-                priority = math.max(priority, 2)
+                score = math.max(score, 3)
             end
         end
     end
-    return priority
-end
-
-local function popImageQueue(queue, minimumRank)
-    local bestIndex, bestRank = nil, -1
-    for i, entry in ipairs(queue) do
-        local rank = imagePriority(entry)
-        if rank > bestRank then
-            bestIndex, bestRank = i, rank
-            if rank == 4 then break end
-        end
-    end
-    if bestRank < (minimumRank or 0) then
-        return nil
-    end
-    return bestIndex and table.remove(queue, bestIndex)
-end
-
-local function trimImageCache()
-    while imageCacheSize > 64 do
-        local oldestKey, oldestTime
-        for key, entry in pairs(imageCache) do
-            if not entry.loading and not entry.queued then
-                local inUse = false
-                for label, bound in pairs(imageBindings) do
-                    if bound == key and label:IsDescendantOf(gui) then
-                        inUse = true
-                        break
-                    end
-                end
-                if not inUse and (not oldestTime or entry.lastUsed < oldestTime) then
-                    oldestKey, oldestTime = key, entry.lastUsed
-                end
-            end
-        end
-        if not oldestKey then break end
-        local entry = imageCache[oldestKey]
-        if entry.image then entry.image:Destroy() end
-        imageCache[oldestKey] = nil
-        imageCacheSize -= 1
-    end
+    return score
 end
 
 local function applyImage(label, native, source, kind)
     native = type(native) == "string" and native or ""
-    kind = kind == "avatar" and "avatar" or "thumbnail"
     source = remoteImageUrl(source)
-    local key = source and (kind .. "|" .. source) or ""
+    local key = source or ""
     if label:GetAttribute("ImageKey") == key and label:GetAttribute("NativeImage") == native then
         return
     end
@@ -1502,117 +1207,67 @@ local function applyImage(label, native, source, kind)
     label:SetAttribute("NativeImage", native)
     imageBindings[label] = key
     label.Image = native
-    if not source then
+    if not fileImagesAvailable or not source then return end
+    local item = imageCache[key]
+    if item and item.asset then
+        item.lastUsed = os.clock()
+        label.Image = item.asset
         return
     end
-    local entry = imageCache[key]
-    if entry and entry.content then
-        entry.lastUsed = os.clock()
-        label.ImageContent = entry.content
-        return
-    end
-    if entry and entry.failedAt and os.clock() - entry.failedAt < 20 then
-        return
-    end
-    if not entry then
-        entry = {
-            key = key, source = source, kind = kind,
-            pending = setmetatable({}, {__mode = "k"}),
-            lastUsed = os.clock(), queued = true,
+    if item and item.failedAt and os.clock() - item.failedAt < 20 then return end
+    if not item then
+        item = {
+            source = source, pending = setmetatable({}, {__mode = "k"}),
+            queued = true, lastUsed = os.clock(),
         }
-        imageCache[key] = entry
-        imageCacheSize += 1
-        table.insert(imageQueue, entry)
-    elseif entry.failedAt and not entry.loading then
-        entry.failedAt = nil
-        entry.queued = true
-        table.insert(imageQueue, entry)
-    end
-    entry.pending[label] = true
-    if pumpImageQueue then
-        task.defer(pumpImageQueue)
-    end
-end
-
-pumpImageDecodes = function()
-    if not alive or activeImageDecodes >= 1 or #imageDecodeQueue == 0 then
-        return
-    end
-    local entry = popImageQueue(imageDecodeQueue)
-    if not entry or not entry.png then return end
-    activeImageDecodes += 1
-    task.spawn(function()
-        local ok, data = pcall(function()
-            local dimensions, pixels = decodeImagePng(entry.png)
-            if not alive then return nil end
-            local editable = AssetService:CreateEditableImage({Size = dimensions})
-            if not editable then error("Image memory budget exceeded") end
-            local written, writeError = pcall(function()
-                editable:WritePixelsBuffer(Vector2.zero, dimensions, pixels)
-            end)
-            if not written then
-                editable:Destroy()
-                error(writeError)
-            end
-            return editable
-        end)
-        entry.png = nil
-        entry.loading = false
-        activeImageDecodes -= 1
-        if not alive then
-            if ok and data then data:Destroy() end
-            return
+        imageCache[key] = item
+        table.insert(imageQueue, item)
+    elseif item.failedAt and not item.loading then
+        item.failedAt = nil
+        if not item.queued then
+            item.queued = true
+            table.insert(imageQueue, item)
         end
-        if ok and data then
-            entry.image = data
-            entry.content = Content.fromObject(data)
-            entry.lastUsed = os.clock()
-            for label in pairs(entry.pending) do
-                if label:IsDescendantOf(gui) and imageBindings[label] == entry.key then
-                    label.ImageContent = entry.content
-                end
-            end
-        else
-            entry.failedAt = os.clock()
-            warn("ScriptFinder image: " .. tostring(data))
-        end
-        table.clear(entry.pending)
-        trimImageCache()
-        pumpImageDecodes()
+    end
+    item.pending[label] = true
+    task.defer(function()
+        if pumpImageQueue then pumpImageQueue() end
     end)
 end
 
 pumpImageQueue = function()
-    for i = #imageQueue, 1, -1 do
-        local pending = imageQueue[i]
-        if imagePriority(pending) == 0 then
-            table.remove(imageQueue, i)
-            pending.queued = false
-            imageCache[pending.key] = nil
-            imageCacheSize -= 1
+    if not alive or not fileImagesAvailable then return end
+    while activeImageLoads < 4 and #imageQueue > 0 do
+        local best, rank = nil, -1
+        for i, item in ipairs(imageQueue) do
+            local value = imagePriority(item)
+            if value > rank then
+                best, rank = i, value
+            end
         end
-    end
-    while alive and activeImageFetches < 4 and #imageQueue > 0 do
-        local entry = popImageQueue(imageQueue, 3)
-        if not entry then break end
-        if entry.queued and not entry.loading and not entry.content then
-            entry.queued = false
-            entry.loading = true
-            activeImageFetches += 1
+        if not best or rank < 2 then break end
+        local item = table.remove(imageQueue, best)
+        if item.queued and not item.loading and not item.asset then
+            item.queued, item.loading = false, true
+            activeImageLoads += 1
             task.spawn(function()
-                local ok, data = pcall(requestImagePng, entry.source, entry.kind)
-                activeImageFetches -= 1
+                local ok, value = pcall(imageFromDisk, item.source)
+                activeImageLoads -= 1
+                item.loading = false
                 if not alive then return end
                 if ok then
-                    entry.png = data
-                    table.insert(imageDecodeQueue, entry)
-                    pumpImageDecodes()
+                    item.asset = value
+                    item.lastUsed = os.clock()
+                    for label in pairs(item.pending) do
+                        if label:IsDescendantOf(gui) and imageBindings[label] == item.source then
+                            label.Image = value
+                        end
+                    end
                 else
-                    entry.loading = false
-                    entry.failedAt = os.clock()
-                    table.clear(entry.pending)
-                    warn("ScriptFinder image: " .. tostring(data))
+                    item.failedAt = os.clock()
+                    warn("ScriptFinder image: " .. tostring(value))
                 end
+                table.clear(item.pending)
                 pumpImageQueue()
             end)
         end
@@ -1621,12 +1276,6 @@ end
 
 bind(gui.Destroying, function()
     table.clear(imageQueue)
-    table.clear(imageDecodeQueue)
-    for _, entry in pairs(imageCache) do
-        if entry.image then entry.image:Destroy() end
-        table.clear(entry.pending)
-        entry.png = nil
-    end
     table.clear(imageCache)
     table.clear(imageBindings)
 end)
