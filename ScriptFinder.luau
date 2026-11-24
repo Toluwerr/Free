@@ -34,7 +34,12 @@ local function remoteImageUrl(value)
         return nil
     end
     host = host:lower()
-    if host == "haxhell.com" or host == "www.haxhell.com" or host == "cdn.haxhell.com" then
+    if host == "rscripts.net" or host == "www.rscripts.net" or host == "cdn.rscripts.net" then
+        if route:match("^/assets/[%w%._%-%/]+$") or route:match("^/images/[%w%._%-%/]+$")
+            or route:match("^/uploads/[%w%._%-%/]+$") then
+            return "https://" .. host .. route
+        end
+    elseif host == "haxhell.com" or host == "www.haxhell.com" or host == "cdn.haxhell.com" then
         if route:match("^/images/[%w%._%-%/]+$") or route:match("^/uploads/[%w%._%-%/]+$")
             or route:match("^/storage/[%w%._%-%/]+$") then
             return "https://" .. host .. route
@@ -496,6 +501,123 @@ local function fetchHaxHellCode(slug)
         error("HaxHell source unavailable", 0)
     end
     return {source = source}
+end
+
+local RScriptsAPIKey = "rsc_live_zA1n48C_ZCzYLOr_AvGyGBrcctAp7bLH"
+
+local function rscriptsFetch(route)
+    local payload = {
+        Url = "https://api.rscripts.net/v1/" .. route, Method = "GET",
+        Headers = {Authorization = "Bearer " .. RScriptsAPIKey, Accept = "application/json",
+            ["Cache-Control"] = "no-cache"},
+    }
+    local response
+    if RunService:IsServer() then
+        response = HttpService:RequestAsync(payload)
+    else
+        local send = type(request) == "function" and request
+            or (type(http_request) == "function" and http_request)
+            or (syn and type(syn.request) == "function" and syn.request)
+        if type(send) ~= "function" then error("RScripts requires HTTP request support", 0) end
+        response = send(payload)
+    end
+    if type(response) ~= "table" then error("RScripts connection failed", 0) end
+    local status = tonumber(response.StatusCode or response.Status or response.status_code)
+    local body = response.Body or response.body
+    if type(body) ~= "string" or #body == 0 or #body > 8000000 then
+        error("Invalid RScripts response", 0)
+    end
+    local ok, decoded = pcall(HttpService.JSONDecode, HttpService, body)
+    if not ok or type(decoded) ~= "table" then error("Invalid RScripts JSON", 0) end
+    if decoded.success ~= true or (status and (status < 200 or status >= 300)) then
+        local failure = type(decoded.error) == "table" and decoded.error or {}
+        if status == 401 then error("RScripts API key rejected", 0) end
+        if status == 429 then error("RScripts request limit reached", 0) end
+        error(plainText(failure.message, 150) or ("RScripts HTTP " .. tostring(status or "?")), 0)
+    end
+    return decoded
+end
+
+local function rscriptsImage(value)
+    if type(value) ~= "string" then return nil end
+    if value:sub(1, 1) == "/" and value:sub(1, 2) ~= "//" then
+        value = "https://rscripts.net" .. value
+    end
+    return remoteImageUrl(value)
+end
+
+local function rscriptsSummary(raw)
+    if type(raw) ~= "table" or not identifier(raw.slug) then return nil end
+    local id = identifier(raw.id) and raw.id or raw.slug
+    local title = plainText(raw.title, 180)
+    if not title then return nil end
+    local gameInfo = type(raw.game) == "table" and raw.game or {}
+    local creator = type(raw.creator) == "table" and raw.creator or {}
+    local place = numericId(gameInfo.placeId)
+    local source = type(raw.script) == "string" and raw.script or nil
+    return {
+        provider = 1, id = "rs_" .. id, slug = raw.slug, title = title:gsub("\n", " "),
+        thumbnail = place and ("rbxthumb://type=GameThumbnail&id=" .. place .. "&w=384&h=216") or "",
+        thumbnailSource = rscriptsImage(raw.imageUrl) or rscriptsImage(gameInfo.thumbnailUrl)
+            or rscriptsImage(gameInfo.logoUrl),
+        avatarSource = rscriptsImage(creator.avatarUrl),
+        author = plainText(creator.username, 100),
+        gameName = plainText(gameInfo.title, 140),
+        description = plainText(raw.description, 8000),
+        views = counter(raw.views), likes = counter(raw.likes), executions = nil,
+        scriptType = type(raw.isPaid) == "boolean" and (raw.isPaid and "paid" or "free") or nil,
+        verified = type(creator.isVerified) == "boolean" and creator.isVerified or nil,
+        createdAt = plainText(raw.createdAt, 64), updatedAt = plainText(raw.lastUpdatedAt, 64),
+        risk = type(raw.risk) == "table" and plainText(raw.risk.level, 64) or nil,
+        source = source and #source > 0 and #source <= 350000 and source or nil,
+    }
+end
+
+local function fetchRScriptsCatalogue(page, query, filters, gameOnly)
+    if type(page) ~= "number" or page ~= math.floor(page) or page < 1 or page > 200 then
+        error("Invalid RScripts page", 0)
+    end
+    filters = Filters.normalize(filters)
+    if not filters then error("Invalid RScripts filters", 0) end
+    query = normalizeSearch(query)
+    if #query > 100 then query = query:sub(1, 100) end
+    local sort = ({all = "recommended", newest = "newest", views = "most-views",
+        likes = "most-likes"})[filters.sort] or "recommended"
+    local route = "scripts?page=" .. tostring(page) .. "&limit=" .. PageSize .. "&sort=" .. sort
+    if query ~= "" then route ..= "&q=" .. HttpService:UrlEncode(query) end
+    if gameOnly then
+        local place = numericId(game.PlaceId)
+        if not place then error("Current place unavailable", 0) end
+        route ..= "&placeId=" .. place
+    end
+    if filters.cost == "free" then route ..= "&freeOnly=true" end
+    if filters.verification == "verified" then route ..= "&verifiedOnly=true" end
+    local response = rscriptsFetch(route)
+    if type(response.data) ~= "table" or type(response.meta) ~= "table" then
+        error("Invalid RScripts catalogue response", 0)
+    end
+    local pages = tonumber(response.meta.totalPages)
+    if not pages or pages ~= pages or pages < 0 or pages > 1000000 then
+        error("Invalid RScripts pagination", 0)
+    end
+    local items = {}
+    for _, raw in ipairs(response.data) do
+        if #items >= PageSize then break end
+        local item = rscriptsSummary(raw)
+        if item then
+            item.missingMetrics = {}
+            table.insert(items, item)
+        end
+    end
+    return {items = items, totalPages = math.max(1, math.min(200, math.floor(pages)))}
+end
+
+local function fetchRScriptsDetails(slug)
+    if not identifier(slug) then error("Invalid RScripts slug", 0) end
+    local response = rscriptsFetch("scripts/" .. HttpService:UrlEncode(slug))
+    local item = rscriptsSummary(response.data)
+    if not item then error("Invalid RScripts details", 0) end
+    return item
 end
 
 local function normalizeComments(comments)
@@ -2173,36 +2295,6 @@ createSettingsRow("showStatistics", "Show statistics", "Display the compact view
 createSettingsRow("confirmExecution", "Confirm execution", "Require a second click before running any script.", 4)
 createSettingsRow("refreshOnFocus", "Refresh on focus", "Check for new posts when Roblox regains focus.", 5)
 
-local startupStatus = create("TextLabel", {
-    Name = "StartupStatus",
-    LayoutOrder = 6,
-    Size = UDim2.new(1, -5, 0, 30),
-    BackgroundTransparency = 1,
-    FontFace = Theme.Font,
-    TextSize = 11,
-    TextWrapped = true,
-    TextYAlignment = Enum.TextYAlignment.Center,
-    Text = "",
-    TextColor3 = Theme.Text:Lerp(Theme.Window, 0.28),
-    TextXAlignment = Enum.TextXAlignment.Left,
-    ZIndex = 40,
-}, settingsList)
-
-local settingsFootnote = create("TextLabel", {
-    Name = "ExecutionNotice",
-    LayoutOrder = 7,
-    Size = UDim2.new(1, -5, 0, 58),
-    BackgroundTransparency = 1,
-    FontFace = Theme.Font,
-    TextSize = 11,
-    TextWrapped = true,
-    TextYAlignment = Enum.TextYAlignment.Top,
-    Text = "Only ScriptFinder itself can auto-start. Listed scripts still require manual execution. Reopening Roblox also requires the executor to attach automatically.",
-    TextColor3 = Theme.Text:Lerp(Theme.Window, 0.3),
-    TextXAlignment = Enum.TextXAlignment.Left,
-    ZIndex = 40,
-}, settingsList)
-
 local settingsSaved = create("TextLabel", {
     Name = "SaveStatus",
     Position = UDim2.new(0, 16, 1, -29),
@@ -2233,7 +2325,6 @@ function settings.update(animated)
         end
     end
     settingsSaved.Text = settings.persistent and (gui:GetAttribute("SettingsPersistent") and "Saved locally" or "Unable to save") or "Changes last for this session"
-    startupStatus.Text = "Auto-start: " .. settings.autoStartStatus
     for _, element in ipairs(gui:GetDescendants()) do
         if element:IsA("Frame") and (element.Name == "Metrics" or element.Name == "Statistics") then
             element.Visible = settings.values.showStatistics
