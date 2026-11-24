@@ -784,6 +784,9 @@ local Lucide48 = table.freeze({
     ["arrow-right"] = {Image = "rbxassetid://16898612629", Offset = Vector2.new(453, 820)},
     ["search"] = {Image = "rbxassetid://16898613699", Offset = Vector2.new(918, 857)},
     ["filter"] = {Image = "rbxassetid://16898613353", Offset = Vector2.new(612, 869)},
+    ["settings"] = {Image = "rbxassetid://16898613777", Offset = Vector2.new(771, 257)},
+    ["x"] = {Image = "rbxassetid://16898613869", Offset = Vector2.new(869, 906)},
+    ["refresh-cw"] = {Image = "rbxassetid://16898613699", Offset = Vector2.new(404, 869)},
     ["chevron-down"] = {Image = "rbxassetid://16898612819", Offset = Vector2.new(196, 918)},
     ["check"] = {Image = "rbxassetid://16898612819", Offset = Vector2.new(710, 869)},
     ["star"] = {Image = "rbxassetid://16898613777", Offset = Vector2.new(967, 147)},
@@ -1584,6 +1587,62 @@ gui:SetAttribute("FavoritesPersistent", favorites.persistent)
 gui:SetAttribute("FavoriteCount", #favorites.order)
 gui:SetAttribute("CatalogueScope", catalogueScope)
 
+local settings = {
+    path = "ScriptFinder/Settings.json",
+    defaults = {
+        startInFavorites = false,
+        showStatistics = true,
+        confirmExecution = true,
+        refreshOnFocus = true,
+    },
+    persistent = type(isfile) == "function" and type(isfolder) == "function"
+        and type(makefolder) == "function" and type(readfile) == "function"
+        and type(writefile) == "function",
+    values = {},
+    open = false,
+    motion = nil,
+    generation = 0,
+}
+
+function settings.load()
+    settings.values = table.clone(settings.defaults)
+    if not settings.persistent then return end
+    local ok, message = pcall(function()
+        if not isfile(settings.path) then return end
+        local data = readfile(settings.path)
+        if type(data) ~= "string" or #data > 8192 then error("Invalid settings file") end
+        local decoded = HttpService:JSONDecode(data)
+        if type(decoded) ~= "table" then error("Invalid settings data") end
+        for key, default in pairs(settings.defaults) do
+            if type(decoded[key]) == type(default) then
+                settings.values[key] = decoded[key]
+            end
+        end
+    end)
+    if not ok then warn("ScriptFinder settings: " .. tostring(message)) end
+end
+
+function settings.save()
+    if not settings.persistent then
+        gui:SetAttribute("SettingsPersistent", false)
+        return false
+    end
+    local ok, message = pcall(function()
+        if not isfolder("ScriptFinder") then makefolder("ScriptFinder") end
+        local content = {}
+        for key in pairs(settings.defaults) do
+            content[key] = settings.values[key]
+        end
+        writefile(settings.path, HttpService:JSONEncode(content))
+    end)
+    gui:SetAttribute("SettingsPersistent", ok)
+    if not ok then warn("ScriptFinder settings: " .. tostring(message)) end
+    return ok
+end
+
+settings.load()
+gui:SetAttribute("SettingsPersistent", settings.persistent)
+
 local function clearPageMotion()
     for _, tween in ipairs(pageMotion) do
         tween:Cancel()
@@ -1623,6 +1682,271 @@ local function updatePagination()
         end
     end
 end
+
+local settingsButton = create("TextButton", {
+    Name = "SettingsButton",
+    Position = UDim2.fromOffset(12, 9),
+    Size = UDim2.fromOffset(29, 28),
+    BackgroundColor3 = Theme.Raised,
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "",
+    ZIndex = 5,
+}, header)
+round(settingsButton, 7)
+lucideIcon(settingsButton, "settings", 17, Theme.Text, 6)
+bind(settingsButton.MouseEnter, function()
+    hover(settingsButton, 0)
+end)
+bind(settingsButton.MouseLeave, function()
+    hover(settingsButton, 1)
+end)
+
+local settingsBackdrop = create("TextButton", {
+    Name = "SettingsBackdrop",
+    Size = UDim2.fromScale(1, 1),
+    BackgroundColor3 = Color3.new(0, 0, 0),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "",
+    Visible = false,
+    ZIndex = 37,
+}, content)
+local settingsPanel = create("CanvasGroup", {
+    Name = "SettingsPanel",
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.fromScale(0.5, 0.5),
+    Size = UDim2.fromOffset(410, 380),
+    BackgroundColor3 = Theme.Raised,
+    BorderSizePixel = 0,
+    GroupTransparency = 1,
+    Visible = false,
+    ZIndex = 38,
+}, content)
+round(settingsPanel, 11)
+local settingsHeading = create("TextLabel", {
+    Name = "Heading",
+    Position = UDim2.fromOffset(16, 11),
+    Size = UDim2.new(1, -70, 0, 28),
+    BackgroundTransparency = 1,
+    Text = "Settings",
+    FontFace = Theme.Font,
+    TextSize = 17,
+    TextColor3 = Theme.Text,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 39,
+}, settingsPanel)
+local settingsClose = create("TextButton", {
+    Name = "CloseSettings",
+    Position = UDim2.new(1, -40, 0, 10),
+    Size = UDim2.fromOffset(28, 28),
+    BackgroundColor3 = Theme.Window,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Text = "",
+    ZIndex = 39,
+}, settingsPanel)
+round(settingsClose, 7)
+lucideIcon(settingsClose, "x", 15, Theme.Text, 40)
+create("Frame", {
+    Name = "Divider",
+    Position = UDim2.fromOffset(16, 47),
+    Size = UDim2.new(1, -32, 0, 1),
+    BackgroundColor3 = Theme.Divider,
+    BorderSizePixel = 0,
+    ZIndex = 39,
+}, settingsPanel)
+local settingsList = create("ScrollingFrame", {
+    Name = "Options",
+    Position = UDim2.fromOffset(12, 58),
+    Size = UDim2.new(1, -24, 1, -93),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    CanvasSize = UDim2.fromOffset(0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y,
+    ScrollingDirection = Enum.ScrollingDirection.Y,
+    ScrollBarThickness = 3,
+    ScrollBarImageColor3 = Theme.Divider,
+    ZIndex = 39,
+}, settingsPanel)
+create("UIListLayout", {
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    Padding = UDim.new(0, 8),
+}, settingsList)
+local settingsRows = {}
+local function createSettingsRow(key, title, description, order)
+    local row = create("TextButton", {
+        Name = key,
+        LayoutOrder = order,
+        Size = UDim2.new(1, -5, 0, 67),
+        BackgroundColor3 = Theme.Window,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "",
+        ZIndex = 40,
+    }, settingsList)
+    round(row, 8)
+    create("TextLabel", {
+        Name = "Title",
+        Position = UDim2.fromOffset(11, 9),
+        Size = UDim2.new(1, -80, 0, 20),
+        BackgroundTransparency = 1,
+        FontFace = Theme.Font,
+        TextSize = 13,
+        Text = title,
+        TextColor3 = Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 41,
+    }, row)
+    create("TextLabel", {
+        Name = "Description",
+        Position = UDim2.fromOffset(11, 31),
+        Size = UDim2.new(1, -75, 0, 29),
+        BackgroundTransparency = 1,
+        FontFace = Theme.Font,
+        TextSize = 10,
+        TextWrapped = true,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        Text = description,
+        TextColor3 = Theme.Text:Lerp(Theme.Window, 0.36),
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 41,
+    }, row)
+    local track = create("Frame", {
+        Name = "Switch",
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -11, 0.5, 0),
+        Size = UDim2.fromOffset(39, 22),
+        BackgroundColor3 = Theme.Divider,
+        BorderSizePixel = 0,
+        ZIndex = 41,
+    }, row)
+    round(track, 11)
+    local thumb = create("Frame", {
+        Name = "Thumb",
+        Position = UDim2.fromOffset(3, 3),
+        Size = UDim2.fromOffset(16, 16),
+        BackgroundColor3 = Theme.Text,
+        BorderSizePixel = 0,
+        ZIndex = 42,
+    }, track)
+    round(thumb, 8)
+    settingsRows[key] = {track = track, thumb = thumb}
+    row.Activated:Connect(function()
+        if not alive then return end
+        settings.values[key] = not settings.values[key]
+        settings.save()
+        if settings.update then settings.update(true) end
+    end)
+end
+
+createSettingsRow("startInFavorites", "Start in Favorites", "Open your saved collection when ScriptFinder starts.", 1)
+createSettingsRow("showStatistics", "Show statistics", "Display the compact views, executions, and likes pill.", 2)
+createSettingsRow("confirmExecution", "Confirm execution", "Require a second click before running any script.", 3)
+createSettingsRow("refreshOnFocus", "Refresh on focus", "Check for new posts when Roblox regains focus.", 4)
+
+local settingsFootnote = create("TextLabel", {
+    Name = "ExecutionNotice",
+    LayoutOrder = 5,
+    Size = UDim2.new(1, -5, 0, 58),
+    BackgroundTransparency = 1,
+    FontFace = Theme.Font,
+    TextSize = 11,
+    TextWrapped = true,
+    TextYAlignment = Enum.TextYAlignment.Top,
+    Text = "Script execution is manual. Third-party scripts are not run automatically when Roblox starts or changes games.",
+    TextColor3 = Theme.Text:Lerp(Theme.Window, 0.3),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 40,
+}, settingsList)
+
+local settingsSaved = create("TextLabel", {
+    Name = "SaveStatus",
+    Position = UDim2.new(0, 16, 1, -29),
+    Size = UDim2.new(1, -32, 0, 20),
+    BackgroundTransparency = 1,
+    FontFace = Theme.Font,
+    TextSize = 10,
+    TextColor3 = Theme.Text:Lerp(Theme.Window, 0.4),
+    TextXAlignment = Enum.TextXAlignment.Right,
+    ZIndex = 40,
+}, settingsPanel)
+
+function settings.update(animated)
+    for key, row in pairs(settingsRows) do
+        local enabled = settings.values[key]
+        local color = enabled and Theme.Accent or Theme.Divider
+        local pos = UDim2.fromOffset(enabled and 20 or 3, 3)
+        if animated then
+            TweenService:Create(row.track, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                BackgroundColor3 = color,
+            }):Play()
+            TweenService:Create(row.thumb, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                Position = pos,
+            }):Play()
+        else
+            row.track.BackgroundColor3 = color
+            row.thumb.Position = pos
+        end
+    end
+    settingsSaved.Text = settings.persistent and (gui:GetAttribute("SettingsPersistent") and "Saved locally" or "Unable to save") or "Changes last for this session"
+    for _, element in ipairs(gui:GetDescendants()) do
+        if element:IsA("Frame") and (element.Name == "Metrics" or element.Name == "Statistics") then
+            element.Visible = settings.values.showStatistics
+        end
+    end
+end
+
+local function sizeSettings()
+    local size = content.AbsoluteSize
+    settingsPanel.Size = UDim2.fromOffset(math.min(440, math.max(1, size.X - 24)),
+        math.min(430, math.max(1, size.Y - 20)))
+end
+
+function settings.toggle(open)
+    if not alive or settings.open == open then return end
+    settings.open = open
+    settings.generation += 1
+    local token = settings.generation
+    if settings.motion then
+        for _, tween in ipairs(settings.motion) do tween:Cancel() end
+    end
+    sizeSettings()
+    if open then
+        if filterState.close then filterState.close(false) end
+        settingsBackdrop.Visible = true
+        settingsPanel.Visible = true
+        settings.update(false)
+    end
+    local info = TweenInfo.new(0.24, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+    local fade = TweenService:Create(settingsPanel, info, {GroupTransparency = open and 0 or 1})
+    local dim = TweenService:Create(settingsBackdrop, info, {BackgroundTransparency = open and 0.36 or 1})
+    settings.motion = {fade, dim}
+    fade:Play()
+    dim:Play()
+    if not open then
+        fade.Completed:Once(function()
+            if alive and token == settings.generation and not settings.open then
+                settingsPanel.Visible = false
+                settingsBackdrop.Visible = false
+            end
+        end)
+    end
+end
+
+bind(settingsButton.Activated, function()
+    settings.toggle(not settings.open)
+end)
+bind(settingsClose.Activated, function() settings.toggle(false) end)
+bind(settingsBackdrop.Activated, function() settings.toggle(false) end)
+bind(content:GetPropertyChangedSignal("AbsoluteSize"), sizeSettings)
+bind(content:GetPropertyChangedSignal("Visible"), function()
+    if not content.Visible and settings.open then settings.toggle(false) end
+end)
+settings.update(false)
+sizeSettings()
 
 local function formatCounter(n)
     if n == nil then
@@ -1854,6 +2178,7 @@ end)
 local function makeMetrics(parent, item, layer)
     local pill = create("Frame", {
         Name = "Metrics",
+        Visible = settings.values.showStatistics,
         LayoutOrder = 3,
         Size = UDim2.fromOffset(0, 22),
         AutomaticSize = Enum.AutomaticSize.X,
@@ -2624,6 +2949,7 @@ local function renderDetails(body, item, data)
         showStatus(ok and "Copied" or "Unable to copy")
     end)
     local executing = false
+    local confirmUntil = 0
     executeButton.Activated:Connect(function()
         if not scriptSource or executing or type(loadstring) ~= "function" then
             if type(loadstring) ~= "function" then
@@ -2631,6 +2957,12 @@ local function renderDetails(body, item, data)
             end
             return
         end
+        if settings.values.confirmExecution and os.clock() > confirmUntil then
+            confirmUntil = os.clock() + 4
+            showStatus("Press play again to confirm")
+            return
+        end
+        confirmUntil = 0
         executing = true
         showStatus("Running…")
         task.spawn(function()
@@ -3659,7 +3991,7 @@ bind(dotButton.Activated, function()
 end)
 
 bind(UserInputService.WindowFocused, function()
-    if alive and mode ~= "dot" and mode ~= "closed" then
+    if alive and mode ~= "dot" and mode ~= "closed" and settings.values.refreshOnFocus then
         requestFreshCatalogue(2)
     end
 end)
@@ -3718,5 +4050,8 @@ bind(gui.Destroying, function()
 end)
 
 selectProvider(selectedProvider, false)
+if settings.values.startInFavorites then
+    switchCatalogue("favorites")
+end
 updatePagination()
 render()
