@@ -1427,6 +1427,10 @@ local function imagePriority(entry)
             if detailView and label:IsDescendantOf(detailView) then
                 return 4
             end
+            if label:IsDescendantOf(results) and not results.Visible then
+                priority = math.max(priority, 1)
+                continue
+            end
             local scroller = label:FindFirstAncestorWhichIsA("ScrollingFrame")
             if scroller then
                 local top = scroller.AbsolutePosition.Y
@@ -1446,7 +1450,7 @@ local function imagePriority(entry)
     return priority
 end
 
-local function popImageQueue(queue)
+local function popImageQueue(queue, minimumRank)
     local bestIndex, bestRank = nil, -1
     for i, entry in ipairs(queue) do
         local rank = imagePriority(entry)
@@ -1454,6 +1458,9 @@ local function popImageQueue(queue)
             bestIndex, bestRank = i, rank
             if rank == 4 then break end
         end
+    end
+    if bestRank < (minimumRank or 0) then
+        return nil
     end
     return bestIndex and table.remove(queue, bestIndex)
 end
@@ -1576,9 +1583,19 @@ pumpImageDecodes = function()
 end
 
 pumpImageQueue = function()
+    for i = #imageQueue, 1, -1 do
+        local pending = imageQueue[i]
+        if imagePriority(pending) == 0 then
+            table.remove(imageQueue, i)
+            pending.queued = false
+            imageCache[pending.key] = nil
+            imageCacheSize -= 1
+        end
+    end
     while alive and activeImageFetches < 4 and #imageQueue > 0 do
-        local entry = popImageQueue(imageQueue)
-        if entry and entry.queued and not entry.loading and not entry.content then
+        local entry = popImageQueue(imageQueue, 3)
+        if not entry then break end
+        if entry.queued and not entry.loading and not entry.content then
             entry.queued = false
             entry.loading = true
             activeImageFetches += 1
@@ -1794,7 +1811,18 @@ local function makePage(items)
         grid.FillDirectionMaxCells = columns
     end
     scroller:GetPropertyChangedSignal("AbsoluteSize"):Connect(layoutCards)
+    scroller:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+        if pumpImageQueue then task.defer(pumpImageQueue) end
+    end)
+    scroller:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+        if pumpImageQueue then task.defer(pumpImageQueue) end
+    end)
     layoutCards()
+    task.delay(0.08, function()
+        if alive and scroller.Parent and pumpImageQueue then
+            pumpImageQueue()
+        end
+    end)
     table.clear(activeCards)
     reconcileCards(scroller, items)
     return group
