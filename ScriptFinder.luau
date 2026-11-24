@@ -194,7 +194,7 @@ local function readResponse(url, fresh)
     if type(decoded) ~= "table" then
         error("Invalid ScriptBlox response", 0)
     end
-    if type(decoded.message) == "string" and not decoded.result and not decoded.script then
+    if type(decoded.message) == "string" and not decoded.result and not decoded.script and not decoded.data then
         error(plainText(decoded.message, 160) or "ScriptBlox request failed", 0)
     end
     return decoded
@@ -1477,7 +1477,7 @@ do
     local index = 0
     for _, group in ipairs(Filters.groups) do
         index += 1
-        create("TextLabel", {
+        local heading = create("TextLabel", {
             Name = group.key,
             LayoutOrder = index,
             Size = UDim2.new(1, -4, 0, 23),
@@ -1489,6 +1489,8 @@ do
             TextXAlignment = Enum.TextXAlignment.Left,
             ZIndex = 32,
         }, scrolling)
+        filterState.headings = filterState.headings or {}
+        filterState.headings[group.key] = heading
         for _, option in ipairs(group.options) do
             index += 1
             local row = create("TextButton", {
@@ -1520,11 +1522,13 @@ do
         filterState.label.Text = count > 0 and ("Filters · " .. count) or "Filters"
         filterState.icon.ImageColor3 = count > 0 and Theme.Accent or Theme.Text
         filterState.chevron.Rotation = filterState.menuOpen and 180 or 0
+        if filterState.headings and filterState.headings.verification then
+            filterState.headings.verification.Visible = selectedProvider ~= 2
+        end
         for _, row in ipairs(filterState.rows) do
             local selected = filterState.values[row.key] == row.value
             local supported = not (selectedProvider == 2 and
-                ((row.key == "verification" and row.value ~= "all")
-                    or (row.key == "sort" and row.value == "likes")))
+                (row.key == "verification" or (row.key == "sort" and row.value == "likes")))
             row.button.Visible = supported
             row.button.Active = supported
             row.button.BackgroundTransparency = selected and 0 or 1
@@ -3586,7 +3590,7 @@ local function loadCatalogue(target, direction)
             local reason = not ok and tostring(data) or (type(data) == "table" and data.error or "Invalid catalogue response")
             reason = tostring(reason):gsub("[%c]", " ")
             warn("ScriptFinder catalogue: " .. reason)
-            feedback.Text = (scope == "favorites" and "Favorites: " or "ScriptBlox: ") .. string.sub(reason, 1, 180)
+            feedback.Text = (scope == "favorites" and "Favorites: " or (provider == 2 and "HaxHell: " or "ScriptBlox: ")) .. string.sub(reason, 1, 180)
             feedback.Visible = true
             feedback.BackgroundTransparency = activePageView and 0.1 or 1
             updatePagination()
