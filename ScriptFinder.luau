@@ -142,12 +142,44 @@ local function identifier(value)
     return type(value) == "string" and #value > 0 and #value <= 240 and value:match("^[%w_%-]+$") ~= nil
 end
 
-local function readResponse(url)
+local function readResponse(url, fresh)
     local body
     if RunService:IsServer() then
-        body = HttpService:GetAsync(url, false, {Accept = "application/json"})
+        body = HttpService:GetAsync(url, fresh == true, {Accept = "application/json"})
     else
-        body = game:HttpGet(url)
+        if fresh then
+            local send = type(request) == "function" and request
+                or (type(http_request) == "function" and http_request)
+                or (syn and type(syn.request) == "function" and syn.request)
+            if type(send) == "function" then
+                local ok, response = pcall(send, {
+                    Url = url,
+                    Method = "GET",
+                    Headers = {
+                        Accept = "application/json",
+                        ["Cache-Control"] = "no-cache",
+                        Pragma = "no-cache",
+                    },
+                })
+                if ok and type(response) == "table" then
+                    local status = tonumber(response.StatusCode or response.Status or response.status_code)
+                    local value = response.Body or response.body
+                    if type(value) == "string" and value ~= ""
+                        and (not status or (status >= 200 and status < 300)) then
+                        body = value
+                    elseif status then
+                        local decodedOk, decoded = pcall(function()
+                            return HttpService:JSONDecode(value)
+                        end)
+                        error(decodedOk and type(decoded) == "table" and plainText(decoded.message, 160)
+                            or ("HTTP " .. tostring(status)), 0)
+                    end
+                end
+            end
+        end
+        if not body then
+            body = game:HttpGet(url)
+        end
     end
     if type(body) ~= "string" or body == "" then
         error("Empty ScriptBlox response", 0)
@@ -182,8 +214,8 @@ local function summaryFor(item)
 end
 
 local function fetchCatalogue(target)
-    local url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d", target, PageSize)
-    local decoded = readResponse(url)
+    local url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d&sortBy=createdAt&order=desc", target, PageSize)
+    local decoded = readResponse(url, true)
     local result = decoded.result
     if type(result) ~= "table" or type(result.scripts) ~= "table" then
         error("Invalid catalogue response", 0)
@@ -200,6 +232,12 @@ local function fetchCatalogue(target)
         if type(item) == "table" then
             local summary = summaryFor(item)
             if summary then
+                summary.missingMetrics = {}
+                for _, field in ipairs({"views", "executions", "likes"}) do
+                    if summary[field] == nil then
+                        summary.missingMetrics[field] = true
+                    end
+                end
                 table.insert(items, summary)
             end
         end
@@ -285,7 +323,7 @@ local function fetchDetails(slug)
     if not identifier(slug) then
         error("Invalid script identifier", 0)
     end
-    local decoded = readResponse("https://scriptblox.com/api/script/" .. HttpService:UrlEncode(slug))
+    local decoded = readResponse("https://scriptblox.com/api/script/" .. HttpService:UrlEncode(slug), true)
     local item = decoded.script
     if type(item) ~= "table" then
         error("Invalid script details", 0)
@@ -367,7 +405,7 @@ if RunService:IsServer() then
         end
         activity[kind] = now
         local entry = cache[key]
-        if entry and now - entry.time < (isCode and 90 or (isComments and 30 or (isDetail and 45 or 2))) then
+        if entry and now - entry.time < (isCode and 90 or (isComments and 30 or (isDetail and 5 or 1))) then
             return entry.data
         end
         if pending[key] then
@@ -1489,6 +1527,11 @@ local function reconcileCards(scroller, items)
                 if view.title.Text ~= item.title then
                     view.title.Text = item.title
                 end
+                for _, field in ipairs({"views", "executions", "likes"}) do
+                    if item[field] == nil then
+                        item[field] = view.item[field]
+                    end
+                end
                 view.item = item
                 for name, label in pairs(view.counters) do
                     local value = formatCounter(item[name])
@@ -1622,7 +1665,7 @@ local detailPending = {}
 
 local function requestDetails(slug)
     local cached = detailCache[slug]
-    if cached and os.clock() - cached.time < 45 then
+    if cached and os.clock() - cached.time < 5 then
         return cached.data
     end
     if detailPending[slug] then
@@ -1652,13 +1695,15 @@ local function requestDetails(slug)
     return data
 end
 
-local function mergeMetadata(item, data)
+local function mergeMetadata(item, data, missingOnly)
     if not data then
         return
     end
     for _, key in ipairs({"views", "executions", "likes"}) do
-        if data[key] ~= nil then
+        if data[key] ~= nil and (not missingOnly or item[key] == nil
+            or (item.missingMetrics and item.missingMetrics[key])) then
             item[key] = data[key]
+            if item.missingMetrics then item.missingMetrics[key] = nil end
         end
     end
     if data.thumbnail and data.thumbnail ~= "" then
@@ -1669,8 +1714,8 @@ local function mergeMetadata(item, data)
     end
 end
 
-local function updateCard(item, data)
-    mergeMetadata(item, data)
+local function updateCard(item, data, missingOnly)
+    mergeMetadata(item, data, missingOnly)
     local view = activeCards[item.id]
     if not view or view.item ~= item then
         return
@@ -1690,12 +1735,13 @@ local function hydrateCards(items, token)
             if not alive or generation ~= token or selectedProvider ~= 3 then
                 return
             end
-            if item.likes == nil or item.thumbnail == "" then
+            local needsMetrics = item.missingMetrics and next(item.missingMetrics) ~= nil
+            if needsMetrics or (item.thumbnail == "" and not item.thumbnailSource) then
                 local data = requestDetails(item.slug)
                 if not alive or generation ~= token or selectedProvider ~= 3 then
                     return
                 end
-                updateCard(item, data)
+                updateCard(item, data, true)
                 task.wait(0.65)
             end
         end
