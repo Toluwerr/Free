@@ -309,7 +309,7 @@ local function fetchCatalogue(target, placeId, query, filters)
     query = normalizeSearch(query)
     filters = Filters.normalize(filters)
     if not filters then error("Invalid filters", 0) end
-    local sort = Filters.sorts[filters.sort] or (query ~= "" and "accuracy" or "createdAt")
+    local sort = Filters.sorts[filters.sort] or (query ~= "" and "accuracy" or "updatedAt")
     local url
     if query ~= "" then
         url = string.format("https://scriptblox.com/api/script/search?q=%s&page=%d&max=%d&strict=false",
@@ -581,8 +581,8 @@ local function fetchRScriptsCatalogue(page, query, filters, gameOnly)
     if not filters then error("Invalid RScripts filters", 0) end
     query = normalizeSearch(query)
     if #query > 100 then query = query:sub(1, 100) end
-    local sort = ({all = "recommended", newest = "newest", views = "most-views",
-        likes = "most-likes"})[filters.sort] or "recommended"
+    local sort = ({all = "newest", newest = "newest", views = "most-views",
+        likes = "most-likes"})[filters.sort] or "newest"
     local route = "scripts?page=" .. tostring(page) .. "&limit=" .. PageSize .. "&sort=" .. sort
     if query ~= "" then route ..= "&q=" .. HttpService:UrlEncode(query) end
     if gameOnly then
@@ -1907,6 +1907,7 @@ local settings = {
         showStatistics = true,
         confirmExecution = true,
         refreshOnFocus = true,
+        liveRefresh = false,
     },
     persistent = type(isfile) == "function" and type(isfolder) == "function"
         and type(makefolder) == "function" and type(readfile) == "function"
@@ -2291,6 +2292,9 @@ local function createSettingsRow(key, title, description, order)
             settings.save()
         end
         if settings.update then settings.update(true) end
+        if key == "liveRefresh" and settings.scheduleRefresh then
+            settings.scheduleRefresh()
+        end
     end)
 end
 
@@ -2299,6 +2303,7 @@ createSettingsRow("startInFavorites", "Start in Favorites", "Open your saved col
 createSettingsRow("showStatistics", "Show statistics", "Display the compact views, executions, and likes pill.", 3)
 createSettingsRow("confirmExecution", "Confirm execution", "Require a second click before running any script.", 4)
 createSettingsRow("refreshOnFocus", "Refresh on focus", "Check for new posts when Roblox regains focus.", 5)
+createSettingsRow("liveRefresh", "Live refresh", "Automatically check for new posts every 30 seconds.", 6)
 
 local settingsSaved = create("TextLabel", {
     Name = "SaveStatus",
@@ -3651,7 +3656,7 @@ openDetails = function(item)
     end)
 end
 
-local function loadCatalogue(target, direction)
+local function loadCatalogue(target, direction, background)
     if not alive or loading or target < 1 or (totalPages and target > totalPages) then
         return
     end
@@ -3703,11 +3708,12 @@ local function loadCatalogue(target, direction)
             feedback.Text = (scope == "favorites" and "Favorites: "
                 or (provider == 1 and "RScripts: " or (provider == 2 and "HaxHell: " or "ScriptBlox: ")))
                 .. string.sub(reason, 1, 180)
-            feedback.Visible = true
+            feedback.Visible = not background or not activePageView
             feedback.BackgroundTransparency = activePageView and 0.1 or 1
             updatePagination()
             return
         end
+        gui:SetAttribute("LastCatalogueUpdate", os.time())
         totalPages = math.max(1, math.floor(data.totalPages))
         if target > totalPages then
             updatePagination()
@@ -3749,8 +3755,32 @@ requestFreshCatalogue = function(interval)
     if os.clock() - lastCatalogueRequest < (interval or 6) then
         return
     end
-    loadCatalogue(retryPage or page, 0)
+    loadCatalogue(retryPage or page, 0, true)
 end
+
+function settings.scheduleRefresh()
+    settings.refreshTicket = (settings.refreshTicket or 0) + 1
+    local ticket = settings.refreshTicket
+    if not alive or not settings.values.liveRefresh or not content.Visible then
+        return
+    end
+    local delaySeconds = retryPage and 60 or 30
+    task.delay(delaySeconds, function()
+        if not alive or ticket ~= settings.refreshTicket
+            or not settings.values.liveRefresh or not content.Visible then
+            return
+        end
+        if catalogueScope ~= "favorites" and not detailView and not loading
+            and not filterState.pending and normalizeSearch(searchInput.Text) == searchState.query then
+            requestFreshCatalogue(30)
+        end
+        settings.scheduleRefresh()
+    end)
+end
+
+bind(content:GetPropertyChangedSignal("Visible"), function()
+    settings.scheduleRefresh()
+end)
 
 changePage = function(direction)
     if totalPages and not loading and not detailView then
@@ -4542,8 +4572,7 @@ bind(gui.Destroying, function()
 end)
 
 selectProvider(selectedProvider, false)
-if settings.values.startInFavorites then
-    switchCatalogue("favorites")
-end
+switchCatalogue(settings.values.startInFavorites and "favorites" or "all")
 updatePagination()
 render()
+settings.scheduleRefresh()
