@@ -1522,6 +1522,11 @@ do
         filterState.chevron.Rotation = filterState.menuOpen and 180 or 0
         for _, row in ipairs(filterState.rows) do
             local selected = filterState.values[row.key] == row.value
+            local supported = not (selectedProvider == 2 and
+                ((row.key == "verification" and row.value ~= "all")
+                    or (row.key == "sort" and row.value == "likes")))
+            row.button.Visible = supported
+            row.button.Active = supported
             row.button.BackgroundTransparency = selected and 0 or 1
             row.check.Visible = selected
         end
@@ -1560,10 +1565,10 @@ bind(scopeBack.MouseLeave, function() hover(scopeBack, 0) end)
 local function updateShortcuts()
     for _, entry in ipairs({{favoriteShortcutButton, "favorites"}, {gameShortcutButton, "game"}}) do
         local button, scope = entry[1], entry[2]
-        local selected = selectedProvider == 3 and catalogueScope == scope
+        local selected = selectedProvider ~= 1 and catalogueScope == scope
         local color = selected and Theme.Accent or Theme.Text
         button:SetAttribute("Selected", selected)
-        button.Active = selectedProvider == 3 and not filterState.hidden[button]
+        button.Active = selectedProvider ~= 1 and not filterState.hidden[button]
         local icon = button:FindFirstChild("Icon")
         if icon then
             icon.ImageColor3 = color
@@ -1572,7 +1577,7 @@ local function updateShortcuts()
             button.BackgroundTransparency = selected and 0 or 1
         end
     end
-    filterState.button.Active = selectedProvider == 3
+    filterState.button.Active = selectedProvider ~= 1
 end
 
 local results = create("Frame", {
@@ -1645,6 +1650,8 @@ function favorites.clean(item)
     if not title then return nil end
     local metadata = Filters.metadata(item)
     return {
+        provider = item.provider == 2 and 2 or 3,
+        gameName = plainText(item.gameName, 140),
         scriptType = metadata.scriptType,
         verified = metadata.verified,
         isUniversal = metadata.isUniversal,
@@ -1720,13 +1727,14 @@ function favorites.toggle(item)
     gui:SetAttribute("FavoriteCount", #favorites.order)
 end
 
-function favorites.page(target, query, filters)
+function favorites.page(target, query, filters, provider)
     local order = {}
     query = normalizeSearch(query):lower()
     filters = Filters.normalize(filters) or Filters.normalize()
     for _, id in ipairs(favorites.order) do
         local saved = favorites.entries[id]
-        if saved and Filters.matches(saved, filters) and (query == ""
+        if saved and (saved.provider == provider or (not saved.provider and provider == 3))
+            and Filters.matches(saved, filters) and (query == ""
             or saved.title:lower():find(query, 1, true) or saved.slug:lower():find(query, 1, true)) then
             table.insert(order, id)
         end
@@ -1966,7 +1974,7 @@ end
 
 local function updatePagination()
     updateShortcuts()
-    local enabled = selectedProvider == 3 and not detailView
+    local enabled = selectedProvider ~= 1 and not detailView
     scopeBack.Visible = enabled and (catalogueScope ~= "all" or searchState.query ~= "" or Filters.count(filterState.values) > 0)
     navigation.Visible = not detailView
     selector.Visible = not detailView
@@ -1975,7 +1983,8 @@ local function updatePagination()
         shortcuts.Visible = false
     end
     pageLabel.Visible = enabled
-    attribution.Visible = selectedProvider == 3
+    attribution.Visible = selectedProvider ~= 1
+    attribution.Text = selectedProvider == 2 and "Powered by HaxHell.com" or "Powered by ScriptBlox.com"
     results.Visible = enabled
     pageLabel.Text = totalPages and (tostring(page) .. "/" .. tostring(totalPages)) or ""
     local previousEnabled = enabled and not loading and page > 1
@@ -2786,32 +2795,36 @@ local detailCache = {}
 local detailOrder = {}
 local detailPending = {}
 
-local function requestDetails(slug)
-    local cached = detailCache[slug]
+local function requestDetails(item)
+    local info = if type(item) == "table" then item else {slug = item, provider = 3}
+    if not identifier(info.slug) then return nil end
+    local key = tostring(info.provider == 2 and 2 or 3) .. ":" .. info.slug
+    local cached = detailCache[key]
     if cached and os.clock() - cached.time < 5 then
         return cached.data
     end
-    if detailPending[slug] then
+    if detailPending[key] then
         local deadline = os.clock() + 15
         repeat
             task.wait(0.1)
             if not alive then
                 return nil
             end
-        until not detailPending[slug] or os.clock() >= deadline
-        cached = detailCache[slug]
+        until not detailPending[key] or os.clock() >= deadline
+        cached = detailCache[key]
         return cached and cached.data or nil
     end
-    detailPending[slug] = true
-    local ok, data = pcall(requestData, slug)
-    detailPending[slug] = nil
+    detailPending[key] = true
+    local target = info.provider == 2 and {action = "haxhellDetail", slug = info.slug} or info.slug
+    local ok, data = pcall(requestData, target)
+    detailPending[key] = nil
     if not ok or type(data) ~= "table" or type(data.title) ~= "string" or data.error then
         return nil
     end
-    if not detailCache[slug] then
-        table.insert(detailOrder, slug)
+    if not detailCache[key] then
+        table.insert(detailOrder, key)
     end
-    detailCache[slug] = {time = os.clock(), data = data}
+    detailCache[key] = {time = os.clock(), data = data}
     if #detailOrder > 80 then
         detailCache[table.remove(detailOrder, 1)] = nil
     end
@@ -2871,13 +2884,13 @@ end
 local function hydrateCards(items, token)
     task.spawn(function()
         for _, item in ipairs(items) do
-            if not alive or generation ~= token or selectedProvider ~= 3 then
+            if not alive or generation ~= token or selectedProvider == 1 then
                 return
             end
             local needsMetrics = item.missingMetrics and next(item.missingMetrics) ~= nil
             if needsMetrics or (item.thumbnail == "" and not item.thumbnailSource) then
-                local data = requestDetails(item.slug)
-                if not alive or generation ~= token or selectedProvider ~= 3 then
+                local data = requestDetails(item)
+                if not alive or generation ~= token or selectedProvider == 1 then
                     return
                 end
                 updateCard(item, data, true)
@@ -3053,7 +3066,12 @@ local function renderDetails(body, item, data)
             loadComments(nextCommentsPage)
         end
     end)
-    if data then
+    if data and item.provider == 2 then
+        local count = data.commentsCount
+        commentsStatus.Text = count and (tostring(count) .. " comments · Public comment text unavailable")
+            or "Comments unavailable"
+        commentsStatus.Visible = true
+    elseif data then
         task.defer(loadComments, 1)
     end
 
@@ -3421,7 +3439,7 @@ closeDetails = function()
 end
 
 openDetails = function(item)
-    if not alive or selectedProvider ~= 3 or detailView or not item then
+    if not alive or selectedProvider == 1 or detailView or not item then
         return
     end
     clearPageMotion()
@@ -3489,7 +3507,7 @@ openDetails = function(item)
     detailMotion = TweenService:Create(view, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.fromOffset(14, 12)})
     detailMotion:Play()
     task.spawn(function()
-        local data = requestDetails(item.slug)
+        local data = requestDetails(item)
         if not alive or token ~= detailGeneration or detailView ~= view then
             return
         end
@@ -3504,10 +3522,14 @@ openDetails = function(item)
         local setCode = renderDetails(scroller, item, data)
         if not setCode then return end
         task.spawn(function()
-            local ok, response = pcall(requestData, {action = "code", id = item.slug})
-            if not alive or token ~= detailGeneration or detailView ~= view then
+            if item.provider == 2 and type(data.source) == "string" and data.source ~= "" then
+                if alive and token == detailGeneration and detailView == view then setCode(data.source) end
                 return
             end
+            local target = if item.provider == 2 then {action = "haxhellCode", slug = item.slug}
+                else {action = "code", id = item.slug}
+            local ok, response = pcall(requestData, target)
+            if not alive or token ~= detailGeneration or detailView ~= view then return end
             if ok and type(response) == "table"
                 and type(response.source) == "string" and not response.error then
                 setCode(response.source)
@@ -3519,12 +3541,13 @@ openDetails = function(item)
 end
 
 local function loadCatalogue(target, direction)
-    if not alive or selectedProvider ~= 3 or loading or target < 1 or (totalPages and target > totalPages) then
+    if not alive or selectedProvider == 1 or loading or target < 1 or (totalPages and target > totalPages) then
         return
     end
     generation += 1
     local token = generation
     local scope = catalogueScope
+    local provider = selectedProvider
     local query = searchState.query
     local filters = table.clone(filterState.values)
     local filterKey = Filters.key(filters)
@@ -3538,7 +3561,10 @@ local function loadCatalogue(target, direction)
         lastCatalogueRequest = os.clock()
         local ok, data
         if scope == "favorites" then
-            ok, data = pcall(favorites.page, target, query, filters)
+            ok, data = pcall(favorites.page, target, query, filters, provider)
+        elseif provider == 2 then
+            ok, data = pcall(requestData, {action = "haxhell", page = target,
+                query = query, filters = filters, gameOnly = scope == "game"})
         elseif Filters.count(filters) > 0 then
             ok, data = pcall(requestData, {action = "filtered", page = target, query = query,
                 gameOnly = scope == "game", filters = filters})
@@ -3549,7 +3575,7 @@ local function loadCatalogue(target, direction)
         else
             ok, data = pcall(requestData, target)
         end
-        if not alive or token ~= generation or selectedProvider ~= 3
+        if not alive or token ~= generation or selectedProvider ~= provider
             or scope ~= catalogueScope or query ~= searchState.query
             or filterKey ~= Filters.key(filterState.values) then
             return
@@ -3578,9 +3604,10 @@ local function loadCatalogue(target, direction)
         gui:SetAttribute("Page", page)
         gui:SetAttribute("TotalPages", totalPages)
         feedback.Visible = #data.items == 0
-        local empty = query ~= "" and "No matching scripts."
+        local empty = data.insufficientQuery and "Enter at least two characters to search HaxHell."
+            or (query ~= "" and "No matching scripts.")
             or (scope == "favorites" and "No favorites yet.")
-            or (scope == "game" and "No scripts found for this place." or "No scripts on this page.")
+            or (scope == "game" and "No scripts found for this game." or "No scripts on this page.")
         feedback.Text = #data.items == 0 and empty or ""
         presentPage(data.items, direction, target)
         updatePagination()
@@ -3589,7 +3616,7 @@ local function loadCatalogue(target, direction)
 end
 
 requestFreshCatalogue = function(interval)
-    if not alive or selectedProvider ~= 3 or loading or detailView
+    if not alive or selectedProvider == 1 or loading or detailView
         or not content.Visible or not results.Visible
         or filterState.pending or normalizeSearch(searchInput.Text) ~= searchState.query then
         return
@@ -3654,13 +3681,13 @@ local function switchCatalogue(scope, preserveSearch)
     gui:SetAttribute("TotalPages", nil)
     updatePagination()
     if layoutSearchBar then layoutSearchBar() end
-    if selectedProvider == 3 then
+    if selectedProvider ~= 1 then
         loadCatalogue(1, 0)
     end
 end
 
 local function submitSearch()
-    if not alive or selectedProvider ~= 3 or detailView then return end
+    if not alive or selectedProvider == 1 or detailView then return end
     local query = normalizeSearch(searchInput.Text)
     if query == searchState.query then return end
     searchState.ticket += 1
@@ -3683,7 +3710,7 @@ bind(searchInput.FocusLost, function(enterPressed)
 end)
 
 bind(scopeBack.Activated, function()
-    if selectedProvider == 3 and not detailView then
+    if selectedProvider ~= 1 and not detailView then
         searchInput:ReleaseFocus()
         filterState.values = Filters.normalize()
         filterState.updateRows()
@@ -3692,13 +3719,13 @@ bind(scopeBack.Activated, function()
 end)
 
 bind(favoriteShortcutButton.Activated, function()
-    if selectedProvider == 3 and not detailView then
+    if selectedProvider ~= 1 and not detailView then
         switchCatalogue(catalogueScope == "favorites" and "all" or "favorites")
     end
 end)
 
 bind(gameShortcutButton.Activated, function()
-    if selectedProvider == 3 and not detailView then
+    if selectedProvider ~= 1 and not detailView then
         switchCatalogue(catalogueScope == "game" and "all" or "game")
     end
 end)
@@ -3706,11 +3733,11 @@ end)
 layoutSearchBar = function(animate)
     animate = animate == true
     local width = content.AbsoluteSize.X
-    local hasBack = selectedProvider == 3 and (catalogueScope ~= "all" or searchState.query ~= "" or Filters.count(filterState.values) > 0)
+    local hasBack = selectedProvider ~= 1 and (catalogueScope ~= "all" or searchState.query ~= "" or Filters.count(filterState.values) > 0)
     local inset = hasBack and 40 or 0
     local stacked = width < 520 + inset
     local available = math.max(0, width - (stacked and 28 or 286) - inset)
-    local expanded = filterState.expanded and selectedProvider == 3 and not detailView
+    local expanded = filterState.expanded and selectedProvider ~= 1 and not detailView
     local filterWidth = expanded and math.clamp(available - 64 - 8, 94, 144) or 32
     local minSearch = available >= 250 and 108 or 64
     local visibleIcons = 2
@@ -3730,7 +3757,7 @@ layoutSearchBar = function(animate)
     for index, button in ipairs({favoriteShortcutButton, gameShortcutButton}) do
         local shown = visibleIcons == 2 or (visibleIcons == 1 and index == 2)
         filterState.hidden[button] = not shown
-        button.Active = shown and selectedProvider == 3
+        button.Active = shown and selectedProvider ~= 1
         if shown then button.Visible = true end
         local icon = button:FindFirstChild("Icon")
         local hoverTween = hoverTweens[button]
@@ -3806,7 +3833,7 @@ function filterState.close(animate)
 end
 
 function filterState.select(key, value)
-    if not alive or detailView or selectedProvider ~= 3 or not filterState.menuOpen then return end
+    if not alive or detailView or selectedProvider == 1 or not filterState.menuOpen then return end
     if filterState.values[key] == value then return end
     filterState.values[key] = value
     filterState.updateRows()
@@ -3816,7 +3843,7 @@ function filterState.select(key, value)
     local scope = catalogueScope
     layoutSearchBar(true)
     task.delay(0.6, function()
-        if alive and ticket == filterState.ticket and selectedProvider == 3 and catalogueScope == scope then
+        if alive and ticket == filterState.ticket and selectedProvider ~= 1 and catalogueScope == scope then
             filterState.pending = false
             if not detailView then switchCatalogue(scope, true) end
         end
@@ -3824,7 +3851,7 @@ function filterState.select(key, value)
 end
 
 bind(filterState.button.Activated, function()
-    if selectedProvider ~= 3 or detailView then return end
+    if selectedProvider == 1 or detailView then return end
     if not filterState.expanded then
         filterState.expanded = true
     else
@@ -3875,6 +3902,11 @@ local function selectProvider(index, animated)
     selectedProvider = nextProvider
     gui:SetAttribute("Provider", providers[selectedProvider].Name)
     if changed then
+        filterState.values.verification = "all"
+        if selectedProvider == 2 and filterState.values.sort == "likes" then
+            filterState.values.sort = "all"
+        end
+        filterState.updateRows()
         switchCatalogue()
     end
     stopSelectorTween()
@@ -4324,7 +4356,7 @@ end)
 
 bind(dotButton.Activated, function()
     setMode(restoreMode)
-    if selectedProvider == 3 and not loading and not detailView then
+    if selectedProvider ~= 1 and not loading and not detailView then
         loadCatalogue(page, 0)
     end
 end)
