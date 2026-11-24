@@ -1135,34 +1135,44 @@ end
 local function paintIcon(icon, name)
     icon:ClearAllChildren()
     local function rectangle(x, y, width, height)
-        return create("Frame", {
+        local segment = create("Frame", {
             Position = UDim2.fromOffset(x, y),
             Size = UDim2.fromOffset(width, height),
             BackgroundColor3 = Theme.Text,
             BorderSizePixel = 0,
             ZIndex = icon.ZIndex + 1,
         }, icon)
+        round(segment, 1)
+        return segment
     end
     local function outline(x, y, width, height)
-        local t = 2
-        rectangle(x, y, width, t)
-        rectangle(x, y + height - t, width, t)
-        rectangle(x, y + t, t, height - 2 * t)
-        rectangle(x + width - t, y + t, t, height - 2 * t)
+        local frame = create("Frame", {
+            Position = UDim2.fromOffset(x, y),
+            Size = UDim2.fromOffset(width, height),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            ZIndex = icon.ZIndex + 1,
+        }, icon)
+        round(frame, 2)
+        create("UIStroke", {
+            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+            Color = Theme.Text,
+            Thickness = 1.5,
+        }, frame)
     end
     if name == "Minimize" then
-        rectangle(1, 8, 16, 2)
+        rectangle(1.5, 8.25, 15, 1.5)
     elseif name == "Maximize" then
-        outline(1, 1, 16, 16)
+        outline(1.5, 1.5, 15, 15)
     elseif name == "Restore" then
-        rectangle(5, 1, 12, 2)
-        rectangle(15, 3, 2, 10)
-        rectangle(5, 3, 2, 2)
-        rectangle(13, 11, 2, 2)
-        outline(1, 5, 12, 12)
+        rectangle(5, 1.5, 11.5, 1.5)
+        rectangle(15, 3, 1.5, 10)
+        rectangle(5, 3, 1.5, 2)
+        rectangle(13, 11.5, 2, 1.5)
+        outline(1.5, 5.5, 11.5, 11)
     elseif name == "Close" then
-        line(icon, 2, 2, 16, 16, 2, 0, Theme.Text)
-        line(icon, 16, 2, 2, 16, 2, 0, Theme.Text)
+        round(line(icon, 2.5, 2.5, 15.5, 15.5, 1.5, 0, Theme.Text), 1)
+        round(line(icon, 15.5, 2.5, 2.5, 15.5, 1.5, 0, Theme.Text), 1)
     end
 end
 
@@ -1190,7 +1200,7 @@ local function control(name, order)
         Text = "",
         ZIndex = 5,
     }, controls)
-    round(button, 5)
+    round(button, 6)
     local icon = create("Frame", {
         Name = "Icon",
         AnchorPoint = Vector2.new(0.5, 0.5),
