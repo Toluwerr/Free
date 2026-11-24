@@ -11,25 +11,38 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CatalogRemote = "ScriptFinderCatalog"
 local PageSize = 20
 
+local function numericId(value)
+    local n = tonumber(value)
+    if n and n > 0 and n < 9007199254740992 and n == math.floor(n) then
+        return string.format("%.0f", n)
+    end
+end
+
+local function imageAsset(value)
+    if type(value) ~= "string" then
+        return ""
+    end
+    if value:match("^rbxassetid://%d+$") or value:match("^rbxthumb://type=[%w]+&id=%d+&w=%d+&h=%d+$") then
+        return value
+    end
+    local id = value:match("^https://www%.roblox%.com/asset/%?id=(%d+)$")
+        or value:match("^https://assetdelivery%.roblox%.com/v1/asset/%?id=(%d+)$")
+        or value:match("^https://www%.roblox%.com/asset%?id=(%d+)$")
+    return id and ("rbxassetid://" .. id) or ""
+end
+
 local function thumbnailFor(entry)
     local info = type(entry.game) == "table" and entry.game or {}
-    local image = type(entry.image) == "string" and entry.image or ""
-    if image == "" and type(info.imageUrl) == "string" then
-        image = info.imageUrl
-    end
-    if image:match("^rbxassetid://%d+$") then
+    local image = imageAsset(entry.image)
+    if image ~= "" then
         return image
     end
-    local id = image:match("^https://www%.roblox%.com/asset/%?id=(%d+)$")
-        or image:match("^https://assetdelivery%.roblox%.com/v1/asset/%?id=(%d+)$")
-    if id then
-        return "rbxassetid://" .. id
+    image = imageAsset(info.imageUrl)
+    if image ~= "" then
+        return image
     end
-    local place = tonumber(info.placeId or entry.placeId or info.gameId)
-    if place and place > 0 and place < 9007199254740992 and place == math.floor(place) then
-        return string.format("rbxthumb://type=GameThumbnail&id=%.0f&w=384&h=216", place)
-    end
-    return ""
+    local id = numericId(info.placeId or entry.placeId or info.gameId)
+    return id and ("rbxthumb://type=GameThumbnail&id=" .. id .. "&w=384&h=216") or ""
 end
 
 local function counter(...)
@@ -43,8 +56,26 @@ local function counter(...)
     return nil
 end
 
-local function fetchCatalogue(target)
-    local url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d&sortBy=updatedAt&order=desc", target, PageSize)
+local function plainText(value, limit)
+    if type(value) ~= "string" then
+        return nil
+    end
+    value = value:gsub("\r\n", "\n"):gsub("[%z\1-\8\11\12\14-\31\127]", "")
+    local len = utf8.len(value)
+    if not len or len == 0 then
+        return nil
+    end
+    if len > limit then
+        value = value:sub(1, utf8.offset(value, limit + 1) - 1)
+    end
+    return value
+end
+
+local function identifier(value)
+    return type(value) == "string" and #value > 0 and #value <= 240 and value:match("^[%w_%-]+$") ~= nil
+end
+
+local function readResponse(url)
     local body
     if RunService:IsServer() then
         body = HttpService:GetAsync(url, true, {Accept = "application/json"})
@@ -55,10 +86,37 @@ local function fetchCatalogue(target)
         error("Empty ScriptBlox response", 0)
     end
     local decoded = HttpService:JSONDecode(body)
-    if type(decoded) == "table" and type(decoded.message) == "string" and not decoded.result then
-        error(decoded.message, 0)
+    if type(decoded) ~= "table" then
+        error("Invalid ScriptBlox response", 0)
     end
-    local result = type(decoded) == "table" and decoded.result
+    if type(decoded.message) == "string" and not decoded.result and not decoded.script then
+        error("ScriptBlox request failed", 0)
+    end
+    return decoded
+end
+
+local function summaryFor(item)
+    local title = plainText(item.title, 180)
+    local id = item._id or item.slug
+    if not title or not identifier(id) then
+        return nil
+    end
+    local stats = type(item.stats) == "table" and item.stats or {}
+    return {
+        id = id,
+        slug = identifier(item.slug) and item.slug or id,
+        title = title:gsub("\n", " "),
+        thumbnail = thumbnailFor(item),
+        views = counter(item.views, item.viewCount, stats.views),
+        executions = counter(item.executeCount, item.executionCount, item.executions, item.executes, item.totalExecutions, stats.executions),
+        likes = counter(item.likeCount, item.likes, stats.likes),
+    }
+end
+
+local function fetchCatalogue(target)
+    local url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d", target, PageSize)
+    local decoded = readResponse(url)
+    local result = decoded.result
     if type(result) ~= "table" or type(result.scripts) ~= "table" then
         error("Invalid catalogue response", 0)
     end
@@ -71,28 +129,65 @@ local function fetchCatalogue(target)
         if #items >= PageSize then
             break
         end
-        if type(item) == "table" and type(item.title) == "string" then
-            local title = item.title:gsub("[%c]", " ")
-            local length = utf8.len(title)
-            if length and length > 0 then
-                if length > 180 then
-                    title = title:sub(1, utf8.offset(title, 181) - 1)
-                end
-                local id = item._id or item.slug
-                if type(id) == "string" and id ~= "" then
-                    table.insert(items, {
-                        id = id,
-                        title = title,
-                        thumbnail = thumbnailFor(item),
-                        views = counter(item.views, item.viewCount),
-                        executions = counter(item.executeCount, item.executionCount, item.executions, item.executes, item.totalExecutions),
-                        likes = counter(item.likeCount, item.likes),
-                    })
-                end
+        if type(item) == "table" then
+            local summary = summaryFor(item)
+            if summary then
+                table.insert(items, summary)
             end
         end
     end
     return {totalPages = math.max(1, math.floor(total)), items = items}
+end
+
+local function fetchDetails(slug)
+    if not identifier(slug) then
+        error("Invalid script identifier", 0)
+    end
+    local decoded = readResponse("https://scriptblox.com/api/script/" .. HttpService:UrlEncode(slug))
+    local item = decoded.script
+    if type(item) ~= "table" then
+        error("Invalid script details", 0)
+    end
+    local info = summaryFor(item)
+    if not info then
+        error("Invalid script metadata", 0)
+    end
+    local owner = type(item.owner) == "table" and item.owner or {}
+    info.author = plainText(owner.username, 100)
+    info.avatar = imageAsset(owner.profilePicture)
+    local userId = numericId(owner.robloxUserId)
+    if info.avatar == "" and userId then
+        info.avatar = "rbxthumb://type=AvatarHeadShot&id=" .. userId .. "&w=150&h=150"
+    end
+    info.level = counter(owner.level, owner.userLevel)
+    info.createdAt = plainText(item.createdAt, 64)
+    info.bumpedAt = plainText(item.bumpedAt, 64) or plainText(item.lastBumpedAt, 64)
+    if type(item.isBumped) == "boolean" then
+        info.bumped = item.isBumped
+    elseif type(item.bumped) == "boolean" then
+        info.bumped = item.bumped
+    elseif info.bumpedAt then
+        info.bumped = true
+    end
+    info.description = plainText(item.description, 8000) or plainText(item.features, 8000)
+    local comments = type(item.comments) == "table" and item.comments or decoded.comments
+    if type(comments) == "table" then
+        info.comments = {}
+        for _, comment in ipairs(comments) do
+            if #info.comments >= 30 then
+                break
+            end
+            if type(comment) == "table" then
+                local author = type(comment.owner) == "table" and comment.owner
+                    or type(comment.author) == "table" and comment.author or {}
+                local message = plainText(comment.content, 1000) or plainText(comment.text, 1000) or plainText(comment.message, 1000)
+                if message then
+                    table.insert(info.comments, {author = plainText(author.username, 100), text = message})
+                end
+            end
+        end
+    end
+    return info
 end
 
 if RunService:IsServer() then
@@ -106,16 +201,24 @@ if RunService:IsServer() then
     local cache, order, recent, pending = {}, {}, {}, {}
     local windowStart, requests = os.clock(), 0
     remote.OnServerInvoke = function(player, target)
-        if type(target) ~= "number" or target ~= target or target < 1 or target > 1000000 or target ~= math.floor(target) then
+        local isDetail = type(target) == "string"
+        if isDetail then
+            if not identifier(target) then
+                return {error = "Invalid script identifier"}
+            end
+        elseif type(target) ~= "number" or target ~= target or target < 1 or target > 1000000 or target ~= math.floor(target) then
             return {error = "Invalid page"}
         end
         local now = os.clock()
-        if now - (recent[player] or -math.huge) < 0.5 then
+        local activity = recent[player] or {}
+        recent[player] = activity
+        local kind = isDetail and "detail" or "page"
+        if now - (activity[kind] or -math.huge) < (isDetail and 0.25 or 0.5) then
             return {error = "Please try again"}
         end
-        recent[player] = now
+        activity[kind] = now
         local entry = cache[target]
-        if entry and now - entry.time < 2 then
+        if entry and now - entry.time < (isDetail and 45 or 2) then
             return entry.data
         end
         if pending[target] then
@@ -129,7 +232,7 @@ if RunService:IsServer() then
         end
         requests += 1
         pending[target] = true
-        local ok, data = pcall(fetchCatalogue, target)
+        local ok, data = pcall(isDetail and fetchDetails or fetchCatalogue, target)
         pending[target] = nil
         if not ok then
             warn("ScriptFinder: " .. tostring(data))
@@ -139,7 +242,7 @@ if RunService:IsServer() then
             table.insert(order, target)
         end
         cache[target] = {time = os.clock(), data = data}
-        if #order > 24 then
+        if #order > 64 then
             cache[table.remove(order, 1)] = nil
         end
         return data
@@ -829,6 +932,8 @@ local feedback = create("TextButton", {
 round(feedback, 8)
 
 local activePageView, outgoingPageView, retryPage
+local detailView, detailMotion, detailGeneration = nil, nil, 0
+local openDetails, closeDetails
 local generation, loading, hasLoaded = 0, false, false
 local pageMotion = {}
 local activeCards = {}
@@ -850,9 +955,15 @@ local function clearPageMotion()
 end
 
 local function updatePagination()
-    local enabled = selectedProvider == 3
+    local enabled = selectedProvider == 3 and not detailView
+    navigation.Visible = not detailView
+    selector.Visible = not detailView
+    if detailView then
+        searchPill.Visible = false
+        shortcuts.Visible = false
+    end
     pageLabel.Visible = enabled
-    attribution.Visible = enabled
+    attribution.Visible = selectedProvider == 3
     results.Visible = enabled
     pageLabel.Text = totalPages and (tostring(page) .. "/" .. tostring(totalPages)) or ""
     local previousEnabled = enabled and not loading and page > 1
@@ -968,7 +1079,22 @@ local function makeCard(scroller, item, index)
         BorderSizePixel = 0,
         ZIndex = 4,
     }, card)
-    return {card = card, image = image, title = title, counters = counters}
+    local hit = create("TextButton", {
+        Name = "OpenDetails",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Text = "",
+        AutoButtonColor = false,
+        ZIndex = 8,
+    }, card)
+    local view = {card = card, image = image, title = title, counters = counters, item = item}
+    hit.Activated:Connect(function()
+        if openDetails then
+            openDetails(view.item)
+        end
+    end)
+    return view
 end
 
 local function reconcileCards(scroller, items)
@@ -990,6 +1116,7 @@ local function reconcileCards(scroller, items)
                 if view.title.Text ~= item.title then
                     view.title.Text = item.title
                 end
+                view.item = item
                 for name, label in pairs(view.counters) do
                     local value = formatCounter(item[name])
                     if label.Text ~= value then
@@ -1083,6 +1210,343 @@ local function presentPage(items, direction, target)
     show:Play()
 end
 
+local function requestData(target)
+    local remote = ReplicatedStorage:FindFirstChild(CatalogRemote)
+    if RunService:IsStudio() then
+        remote = remote or ReplicatedStorage:WaitForChild(CatalogRemote, 8)
+        if not remote or not remote:IsA("RemoteFunction") then
+            error("Studio requires the ScriptFinderCatalog server script and HTTP requests enabled", 0)
+        end
+        return remote:InvokeServer(target)
+    end
+    if remote and remote:IsA("RemoteFunction") then
+        return remote:InvokeServer(target)
+    end
+    return type(target) == "number" and fetchCatalogue(target) or fetchDetails(target)
+end
+
+local detailCache = {}
+local detailOrder = {}
+local detailPending = {}
+
+local function requestDetails(slug)
+    local cached = detailCache[slug]
+    if cached and os.clock() - cached.time < 45 then
+        return cached.data
+    end
+    if detailPending[slug] then
+        local deadline = os.clock() + 15
+        repeat
+            task.wait(0.1)
+            if not alive then
+                return nil
+            end
+        until not detailPending[slug] or os.clock() >= deadline
+        cached = detailCache[slug]
+        return cached and cached.data or nil
+    end
+    detailPending[slug] = true
+    local ok, data = pcall(requestData, slug)
+    detailPending[slug] = nil
+    if not ok or type(data) ~= "table" or type(data.title) ~= "string" or data.error then
+        return nil
+    end
+    if not detailCache[slug] then
+        table.insert(detailOrder, slug)
+    end
+    detailCache[slug] = {time = os.clock(), data = data}
+    if #detailOrder > 80 then
+        detailCache[table.remove(detailOrder, 1)] = nil
+    end
+    return data
+end
+
+local function mergeMetadata(item, data)
+    if not data then
+        return
+    end
+    for _, key in ipairs({"views", "executions", "likes"}) do
+        if data[key] ~= nil then
+            item[key] = data[key]
+        end
+    end
+    if data.thumbnail and data.thumbnail ~= "" then
+        item.thumbnail = data.thumbnail
+    end
+end
+
+local function updateCard(item, data)
+    mergeMetadata(item, data)
+    local view = activeCards[item.id]
+    if not view or view.item ~= item then
+        return
+    end
+    if view.image.Image ~= item.thumbnail then
+        view.image.Image = item.thumbnail
+    end
+    for key, label in pairs(view.counters) do
+        local value = formatCounter(item[key])
+        if label.Text ~= value then
+            label.Text = value
+        end
+    end
+end
+
+local function hydrateCards(items, token)
+    task.spawn(function()
+        for _, item in ipairs(items) do
+            if not alive or generation ~= token or selectedProvider ~= 3 then
+                return
+            end
+            if item.likes == nil or item.thumbnail == "" then
+                local data = requestDetails(item.slug)
+                if not alive or generation ~= token or selectedProvider ~= 3 then
+                    return
+                end
+                updateCard(item, data)
+                task.wait(0.65)
+            end
+        end
+    end)
+end
+
+local function detailText(parent, name, text, size, muted, order)
+    return create("TextLabel", {
+        Name = name,
+        LayoutOrder = order,
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        FontFace = Theme.Font,
+        Text = text or "",
+        TextColor3 = muted and Theme.Text:Lerp(Theme.Window, 0.35) or Theme.Text,
+        TextSize = size,
+        TextWrapped = true,
+        RichText = false,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        ZIndex = 7,
+    }, parent)
+end
+
+local function renderDetails(scroller, item, data)
+    scroller:ClearAllChildren()
+    create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 12)}, scroller)
+    create("UIPadding", {PaddingBottom = UDim.new(0, 12), PaddingRight = UDim.new(0, 6)}, scroller)
+    local thumbnail = data and data.thumbnail ~= "" and data.thumbnail or item.thumbnail
+    if thumbnail and thumbnail ~= "" then
+        local picture = create("ImageLabel", {
+            Name = "Thumbnail",
+            LayoutOrder = 1,
+            Size = UDim2.new(1, 0, 0, 160),
+            BackgroundColor3 = Theme.Raised,
+            BorderSizePixel = 0,
+            Image = thumbnail,
+            ScaleType = Enum.ScaleType.Crop,
+            ZIndex = 7,
+        }, scroller)
+        round(picture, 8)
+        local function sizePicture()
+            picture.Size = UDim2.new(1, 0, 0, math.floor(math.clamp(scroller.AbsoluteSize.X * 9 / 16, 120, 300)))
+        end
+        scroller:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+            if picture.Parent then sizePicture() end
+        end)
+        sizePicture()
+    end
+    detailText(scroller, "Title", data and data.title or item.title, 19, false, 2)
+    if not data then
+        detailText(scroller, "Loading", "Loading details…", 13, true, 3)
+        return
+    end
+    local author = create("Frame", {
+        Name = "Author",
+        LayoutOrder = 3,
+        Size = UDim2.new(1, 0, 0, 44),
+        BackgroundTransparency = 1,
+        ZIndex = 7,
+    }, scroller)
+    local hasAvatar = data.avatar and data.avatar ~= ""
+    if hasAvatar then
+        local avatar = create("ImageLabel", {
+            Name = "Avatar",
+            Size = UDim2.fromOffset(42, 42),
+            BackgroundColor3 = Theme.Raised,
+            BorderSizePixel = 0,
+            Image = data.avatar,
+            ScaleType = Enum.ScaleType.Crop,
+            ZIndex = 8,
+        }, author)
+        round(avatar, 21)
+    end
+    local authorText = create("Frame", {
+        Name = "AuthorText",
+        Position = UDim2.fromOffset(hasAvatar and 52 or 0, 0),
+        Size = UDim2.new(1, hasAvatar and -52 or 0, 1, 0),
+        BackgroundTransparency = 1,
+        ZIndex = 8,
+    }, author)
+    detailText(authorText, "Username", data.author or "Author unavailable", 14, false, 1)
+    local byline = {}
+    if data.level ~= nil then
+        table.insert(byline, "Level " .. tostring(data.level))
+    end
+    if data.bumped == true then
+        table.insert(byline, data.bumpedAt and ("Bumped " .. data.bumpedAt:sub(1, 10)) or "Bumped")
+    elseif data.bumped == false then
+        table.insert(byline, "Not bumped")
+    end
+    local meta = detailText(authorText, "Metadata", table.concat(byline, "  ·  "), 11, true, 2)
+    meta.Position = UDim2.fromOffset(0, 20)
+    local stats = create("Frame", {
+        Name = "Statistics",
+        LayoutOrder = 4,
+        Size = UDim2.new(1, 0, 0, 34),
+        BackgroundColor3 = Theme.Raised,
+        BorderSizePixel = 0,
+        ZIndex = 7,
+    }, scroller)
+    round(stats, 8)
+    for i, metric in ipairs({{"views","eye"}, {"executions","play"}, {"likes","thumbs-up"}}) do
+        local cell = create("Frame", {
+            Position = UDim2.fromScale((i - 1) / 3, 0),
+            Size = UDim2.new(1 / 3, 0, 1, 0),
+            BackgroundTransparency = 1,
+            ZIndex = 8,
+        }, stats)
+        local icon = lucideIcon(cell, metric[2], 14, Theme.Text, 9)
+        icon.AnchorPoint = Vector2.new(0, 0.5)
+        icon.Position = UDim2.new(0, 10, 0.5, 0)
+        create("TextLabel", {
+            Name = "Count",
+            Position = UDim2.fromOffset(30, 0),
+            Size = UDim2.new(1, -34, 1, 0),
+            BackgroundTransparency = 1,
+            Text = formatCounter(item[metric[1]]),
+            TextColor3 = Theme.Text,
+            FontFace = Theme.Font,
+            TextSize = 13,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 9,
+        }, cell)
+    end
+    detailText(scroller, "DescriptionHeading", "Description", 14, false, 5)
+    detailText(scroller, "Description", data.description or "No description provided.", 13, false, 6)
+    detailText(scroller, "CommentsHeading", "Comments", 14, false, 7)
+    if type(data.comments) == "table" then
+        if #data.comments == 0 then
+            detailText(scroller, "NoComments", "No comments.", 12, true, 8)
+        end
+        for i, comment in ipairs(data.comments) do
+            local box = create("Frame", {
+                Name = "Comment",
+                LayoutOrder = 8 + i,
+                Size = UDim2.new(1, 0, 0, 0),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                BackgroundColor3 = Theme.Raised,
+                BorderSizePixel = 0,
+                ZIndex = 7,
+            }, scroller)
+            round(box, 8)
+            create("UIPadding", {PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10), PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10)}, box)
+            create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4)}, box)
+            detailText(box, "Author", comment.author or "Unknown author", 12, true, 1)
+            detailText(box, "Message", comment.text, 13, false, 2)
+        end
+    else
+        detailText(scroller, "Unavailable", "Comments are not returned by the public API.", 12, true, 8)
+    end
+end
+
+closeDetails = function()
+    if not detailView then
+        return
+    end
+    detailGeneration += 1
+    if detailMotion then
+        detailMotion:Cancel()
+        detailMotion = nil
+    end
+    local view = detailView
+    detailView = nil
+    view:Destroy()
+    searchPill.Visible = searchPill.Size.X.Offset >= 64
+    shortcuts.Visible = searchPill.Visible
+    updatePagination()
+    if activePageView then
+        activePageView.Position = UDim2.fromOffset(-18, 0)
+        local tween = TweenService:Create(activePageView, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.fromOffset(0, 0)})
+        table.insert(pageMotion, tween)
+        tween:Play()
+    end
+end
+
+openDetails = function(item)
+    if not alive or selectedProvider ~= 3 or detailView or not item then
+        return
+    end
+    clearPageMotion()
+    detailGeneration += 1
+    local token = detailGeneration
+    local view = create("Frame", {
+        Name = "ScriptDetails",
+        Position = UDim2.fromOffset(32, 12),
+        Size = UDim2.new(1, -28, 1, -38),
+        BackgroundColor3 = Theme.Window,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        ZIndex = 6,
+    }, content)
+    detailView = view
+    local back = create("TextButton", {
+        Name = "Back",
+        Position = UDim2.fromOffset(0, 0),
+        Size = UDim2.fromOffset(32, 32),
+        BackgroundColor3 = Theme.Raised,
+        BorderSizePixel = 0,
+        Text = "",
+        AutoButtonColor = false,
+        ZIndex = 7,
+    }, view)
+    round(back, 8)
+    lucideIcon(back, "arrow-left", 18, Theme.Text, 8)
+    back.Activated:Connect(closeDetails)
+    local scroller = create("ScrollingFrame", {
+        Name = "Details",
+        Position = UDim2.fromOffset(0, 44),
+        Size = UDim2.new(1, 0, 1, -44),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.fromOffset(0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Theme.Divider,
+        VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
+        ZIndex = 7,
+    }, view)
+    renderDetails(scroller, item, nil)
+    updatePagination()
+    detailMotion = TweenService:Create(view, TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.fromOffset(14, 12)})
+    detailMotion:Play()
+    task.spawn(function()
+        local data = requestDetails(item.slug)
+        if not alive or token ~= detailGeneration or detailView ~= view then
+            return
+        end
+        if not data then
+            local status = scroller:FindFirstChild("Loading")
+            if status then
+                status.Text = "Script details could not be loaded."
+            end
+            return
+        end
+        updateCard(item, data)
+        renderDetails(scroller, item, data)
+    end)
+end
+
 local function loadCatalogue(target, direction)
     if not alive or selectedProvider ~= 3 or loading or target < 1 or (totalPages and target > totalPages) then
         return
@@ -1097,20 +1561,7 @@ local function loadCatalogue(target, direction)
     updatePagination()
     task.spawn(function()
         lastCatalogueRequest = os.clock()
-        local ok, data = pcall(function()
-                local remote = ReplicatedStorage:FindFirstChild(CatalogRemote)
-                if RunService:IsStudio() then
-                    remote = remote or ReplicatedStorage:WaitForChild(CatalogRemote, 8)
-                    if not remote or not remote:IsA("RemoteFunction") then
-                        error("Studio requires the ScriptFinderCatalog server script and HTTP requests enabled", 0)
-                    end
-                    return remote:InvokeServer(target)
-                end
-                if remote and remote:IsA("RemoteFunction") then
-                    return remote:InvokeServer(target)
-                end
-                return fetchCatalogue(target)
-            end)
+        local ok, data = pcall(requestData, target)
         if not alive or token ~= generation or selectedProvider ~= 3 then
             return
         end
@@ -1140,11 +1591,12 @@ local function loadCatalogue(target, direction)
         feedback.Text = #data.items == 0 and "No scripts on this page." or ""
         presentPage(data.items, direction, target)
         updatePagination()
+        hydrateCards(data.items, token)
     end)
 end
 
 changePage = function(direction)
-    if totalPages and not loading then
+    if totalPages and not loading and not detailView then
         loadCatalogue(page + direction, direction)
     end
 end
@@ -1156,6 +1608,9 @@ bind(feedback.Activated, function()
 end)
 
 local function switchCatalogue()
+    if detailView then
+        closeDetails()
+    end
     generation += 1
     loading, hasLoaded, retryPage = false, false, nil
     clearPageMotion()
@@ -1195,6 +1650,12 @@ local function layoutSearchBar()
     local top = row + 50
     results.Position = UDim2.fromOffset(14, top)
     results.Size = UDim2.new(1, -28, 1, -top - 26)
+    if detailView then
+        searchPill.Visible = false
+        shortcuts.Visible = false
+        navigation.Visible = false
+        selector.Visible = false
+    end
 end
 
 bind(content:GetPropertyChangedSignal("AbsoluteSize"), layoutSearchBar)
@@ -1662,13 +2123,13 @@ end)
 
 bind(dotButton.Activated, function()
     setMode(restoreMode)
-    if selectedProvider == 3 and not loading then
+    if selectedProvider == 3 and not loading and not detailView then
         loadCatalogue(page, 0)
     end
 end)
 
 bind(UserInputService.WindowFocused, function()
-    if alive and mode ~= "dot" and mode ~= "closed" and selectedProvider == 3 and not loading and os.clock() - lastCatalogueRequest >= 2 then
+    if alive and mode ~= "dot" and mode ~= "closed" and selectedProvider == 3 and not loading and not detailView and os.clock() - lastCatalogueRequest >= 2 then
         loadCatalogue(page, 0)
     end
 end)
@@ -1687,6 +2148,11 @@ end)
 
 bind(gui.Destroying, function()
     alive = false
+    detailGeneration += 1
+    if detailMotion then
+        detailMotion:Cancel()
+        detailMotion = nil
+    end
     generation += 1
     for _, tween in ipairs(pageMotion) do
         tween:Cancel()
