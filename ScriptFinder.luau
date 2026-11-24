@@ -633,9 +633,25 @@ if RunService:IsServer() then
         local isGame = type(target) == "table" and target.action == "game"
         local isSearch = type(target) == "table" and target.action == "search"
         local isFiltered = type(target) == "table" and target.action == "filtered"
+        local isHaxHell = type(target) == "table" and target.action == "haxhell"
+        local isHaxHellDetail = type(target) == "table" and target.action == "haxhellDetail"
+        local isHaxHellCode = type(target) == "table" and target.action == "haxhellCode"
         local filters = isFiltered and Filters.normalize(target.filters) or nil
+        local haxhellFilters = isHaxHell and Filters.normalize(target.filters) or nil
         local isDetail = type(target) == "string"
-        if isFiltered then
+        if isHaxHell then
+            if not haxhellFilters or type(target.query) ~= "string" or #target.query > 480
+                or normalizeSearch(target.query) ~= target.query
+                or type(target.page) ~= "number" or target.page < 1 or target.page > 1000000
+                or target.page ~= math.floor(target.page)
+                or type(target.gameOnly) ~= "boolean" then
+                return {error = "Invalid HaxHell request"}
+            end
+        elseif isHaxHellDetail or isHaxHellCode then
+            if not identifier(target.slug) then
+                return {error = "Invalid HaxHell script identifier"}
+            end
+        elseif isFiltered then
             if not filters or type(target.query) ~= "string" or #target.query > 480
                 or normalizeSearch(target.query) ~= target.query
                 or type(target.page) ~= "number" or target.page < 1
@@ -675,7 +691,11 @@ if RunService:IsServer() then
         elseif type(target) ~= "number" or target ~= target or target < 1 or target > 1000000 or target ~= math.floor(target) then
             return {error = "Invalid page"}
         end
-        local key = isFiltered and ("filtered:" .. (target.gameOnly and tostring(game.PlaceId) or "all")
+        local key = isHaxHell and ("haxhell:" .. (target.gameOnly and tostring(game.PlaceId) or "all")
+                .. ":" .. tostring(target.page) .. ":" .. Filters.key(haxhellFilters) .. ":" .. target.query)
+            or (isHaxHellDetail and ("haxhellDetail:" .. target.slug))
+            or (isHaxHellCode and ("haxhellCode:" .. target.slug))
+            or (isFiltered and ("filtered:" .. (target.gameOnly and tostring(game.PlaceId) or "all")
                 .. ":" .. tostring(target.page) .. ":" .. Filters.key(filters) .. ":" .. target.query)
             or (isSearch and ("search:" .. (target.gameOnly and tostring(game.PlaceId) or "all")
                 .. ":" .. tostring(target.page) .. ":" .. target.query))
@@ -685,7 +705,8 @@ if RunService:IsServer() then
         local now = os.clock()
         local activity = recent[player] or {}
         recent[player] = activity
-        local kind = (isSearch or isFiltered) and "search" or (isCode and "code" or (isComments and "comments" or (isDetail and "detail" or (isGame and "game" or "page"))))
+        local kind = isHaxHell and "haxhell" or ((isHaxHellDetail or isHaxHellCode) and "haxhellDetail")
+            or ((isSearch or isFiltered) and "search" or (isCode and "code" or (isComments and "comments" or (isDetail and "detail" or (isGame and "game" or "page")))))
         if now - (activity[kind] or -math.huge) < (isCode and 0.6 or (isDetail and 0.25 or 0.5)) then
             return {error = "Please try again"}
         end
@@ -706,7 +727,13 @@ if RunService:IsServer() then
         requests += 1
         pending[key] = true
         local ok, data
-        if isFiltered then
+        if isHaxHell then
+            ok, data = pcall(fetchHaxHellCatalogue, target.page, target.query, haxhellFilters, target.gameOnly)
+        elseif isHaxHellDetail then
+            ok, data = pcall(fetchHaxHellDetails, target.slug)
+        elseif isHaxHellCode then
+            ok, data = pcall(fetchHaxHellCode, target.slug)
+        elseif isFiltered then
             ok, data = pcall(fetchCatalogue, target.page, target.gameOnly and game.PlaceId or nil, target.query, filters)
         elseif isSearch then
             ok, data = pcall(fetchCatalogue, target.page, target.gameOnly and game.PlaceId or nil, target.query)
@@ -2733,6 +2760,15 @@ local function requestData(target)
     end
     if type(target) == "table" and target.action == "code" then
         return fetchCode(target.id)
+    end
+    if type(target) == "table" and target.action == "haxhell" then
+        return fetchHaxHellCatalogue(target.page, target.query, target.filters, target.gameOnly)
+    end
+    if type(target) == "table" and target.action == "haxhellDetail" then
+        return fetchHaxHellDetails(target.slug)
+    end
+    if type(target) == "table" and target.action == "haxhellCode" then
+        return fetchHaxHellCode(target.slug)
     end
     if type(target) == "table" and target.action == "filtered" then
         return fetchCatalogue(target.page, target.gameOnly and game.PlaceId or nil, target.query, target.filters)
