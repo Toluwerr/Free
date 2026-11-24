@@ -32,8 +32,19 @@ local function thumbnailFor(entry)
     return ""
 end
 
+local function counter(...)
+    for i = 1, select("#", ...) do
+        local value = select(i, ...)
+        local n = tonumber(value)
+        if n and n >= 0 and n < 9007199254740992 then
+            return math.floor(n)
+        end
+    end
+    return nil
+end
+
 local function fetchCatalogue(target)
-    local url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d&sortBy=createdAt&order=desc", target, PageSize)
+    local url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d&sortBy=updatedAt&order=desc", target, PageSize)
     local body
     if RunService:IsServer() then
         body = HttpService:GetAsync(url, true, {Accept = "application/json"})
@@ -67,7 +78,17 @@ local function fetchCatalogue(target)
                 if length > 180 then
                     title = title:sub(1, utf8.offset(title, 181) - 1)
                 end
-                table.insert(items, {title = title, thumbnail = thumbnailFor(item)})
+                local id = item._id or item.slug
+                if type(id) == "string" and id ~= "" then
+                    table.insert(items, {
+                        id = id,
+                        title = title,
+                        thumbnail = thumbnailFor(item),
+                        views = counter(item.views, item.viewCount),
+                        executions = counter(item.executeCount, item.executionCount, item.executions, item.executes, item.totalExecutions),
+                        likes = counter(item.likeCount, item.likes),
+                    })
+                end
             end
         end
     end
@@ -94,7 +115,7 @@ if RunService:IsServer() then
         end
         recent[player] = now
         local entry = cache[target]
-        if entry and now - entry.time < 45 then
+        if entry and now - entry.time < 2 then
             return entry.data
         end
         if pending[target] then
@@ -322,6 +343,9 @@ local Lucide48 = table.freeze({
     ["search"] = {Image = "rbxassetid://16898613699", Offset = Vector2.new(918, 857)},
     ["star"] = {Image = "rbxassetid://16898613777", Offset = Vector2.new(967, 147)},
     ["gamepad-2"] = {Image = "rbxassetid://16898613353", Offset = Vector2.new(710, 967)},
+    ["eye"] = {Image = "rbxassetid://16898613353", Offset = Vector2.new(771, 563)},
+    ["play"] = {Image = "rbxassetid://16898613699", Offset = Vector2.new(918, 257)},
+    ["thumbs-up"] = {Image = "rbxassetid://16898613869", Offset = Vector2.new(771, 355)},
 })
 
 local function lucideIcon(parent, name, size, color, zIndex)
@@ -806,7 +830,10 @@ round(feedback, 8)
 
 local activePageView, outgoingPageView, retryPage
 local generation, loading, hasLoaded = 0, false, false
-local catalogCache, cacheOrder, pageMotion = {}, {}, {}
+local pageMotion = {}
+local activeCards = {}
+local displayedPage
+local lastCatalogueRequest = -math.huge
 
 local function clearPageMotion()
     for _, tween in ipairs(pageMotion) do
@@ -819,7 +846,6 @@ local function clearPageMotion()
     end
     if activePageView then
         activePageView.Position = UDim2.fromOffset(0, 0)
-        activePageView.GroupTransparency = 0
     end
 end
 
@@ -841,8 +867,148 @@ local function updatePagination()
     end
 end
 
+local function formatCounter(n)
+    if n == nil then
+        return "—"
+    end
+    local scales = {{1e12, "T"}, {1e9, "B"}, {1e6, "M"}, {1e3, "K"}}
+    for _, scale in ipairs(scales) do
+        if n >= scale[1] then
+            local value = n / scale[1]
+            if value >= 100 then
+                return string.format("%d%s", math.floor(value + 0.5), scale[2])
+            end
+            return string.format("%.1f", value):gsub("%.0$", "") .. scale[2]
+        end
+    end
+    return tostring(n)
+end
+
+local function makeCard(scroller, item, index)
+    local card = create("Frame", {
+        Name = "ScriptCard",
+        LayoutOrder = index,
+        BackgroundColor3 = Theme.Raised,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        ZIndex = 3,
+    }, scroller)
+    round(card, 8)
+    local image = create("ImageLabel", {
+        Name = "Thumbnail",
+        Size = UDim2.new(1, 0, 1, -48),
+        BackgroundColor3 = Theme.Window,
+        BorderSizePixel = 0,
+        Image = item.thumbnail,
+        ScaleType = Enum.ScaleType.Crop,
+        ZIndex = 4,
+    }, card)
+    round(image, 8)
+    local pill = create("Frame", {
+        Name = "Metrics",
+        AnchorPoint = Vector2.new(0, 1),
+        Position = UDim2.new(0, 6, 1, -6),
+        Size = UDim2.fromOffset(0, 22),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundColor3 = Theme.Window,
+        BackgroundTransparency = 0.12,
+        BorderSizePixel = 0,
+        ZIndex = 5,
+    }, image)
+    round(pill, 11)
+    create("UIPadding", {PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6)}, pill)
+    create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        VerticalAlignment = Enum.VerticalAlignment.Center,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 6),
+    }, pill)
+    local counters = {}
+    for i, metric in ipairs({{"views", "eye"}, {"executions", "play"}, {"likes", "thumbs-up"}}) do
+        local cell = create("Frame", {
+            Name = metric[1],
+            Size = UDim2.fromOffset(0, 22),
+            AutomaticSize = Enum.AutomaticSize.X,
+            BackgroundTransparency = 1,
+            LayoutOrder = i,
+            ZIndex = 6,
+        }, pill)
+        local icon = lucideIcon(cell, metric[2], 12, Theme.Text, 7)
+        icon.AnchorPoint = Vector2.new(0, 0.5)
+        icon.Position = UDim2.new(0, 0, 0.5, 0)
+        local label = create("TextLabel", {
+            Name = "Count",
+            Position = UDim2.fromOffset(15, 0),
+            Size = UDim2.fromOffset(0, 22),
+            AutomaticSize = Enum.AutomaticSize.X,
+            BackgroundTransparency = 1,
+            TextColor3 = Theme.Text,
+            FontFace = Theme.Font,
+            TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Text = formatCounter(item[metric[1]]),
+            ZIndex = 7,
+        }, cell)
+        counters[metric[1]] = label
+    end
+    local title = create("TextLabel", {
+        Name = "Title",
+        Position = UDim2.new(0, 10, 1, -44),
+        Size = UDim2.new(1, -20, 0, 40),
+        BackgroundTransparency = 1,
+        Text = item.title,
+        TextColor3 = Theme.Text,
+        FontFace = Theme.Font,
+        TextSize = 13,
+        TextScaled = false,
+        TextWrapped = true,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        BorderSizePixel = 0,
+        ZIndex = 4,
+    }, card)
+    return {card = card, image = image, title = title, counters = counters}
+end
+
+local function reconcileCards(scroller, items)
+    local retained = {}
+    for index, item in ipairs(items) do
+        if not retained[item.id] then
+            retained[item.id] = true
+            local view = activeCards[item.id]
+            if not view then
+                view = makeCard(scroller, item, index)
+                activeCards[item.id] = view
+            else
+                if view.card.LayoutOrder ~= index then
+                    view.card.LayoutOrder = index
+                end
+                if view.image.Image ~= item.thumbnail then
+                    view.image.Image = item.thumbnail
+                end
+                if view.title.Text ~= item.title then
+                    view.title.Text = item.title
+                end
+                for name, label in pairs(view.counters) do
+                    local value = formatCounter(item[name])
+                    if label.Text ~= value then
+                        label.Text = value
+                    end
+                end
+            end
+        end
+    end
+    for id, view in pairs(activeCards) do
+        if not retained[id] then
+            view.card:Destroy()
+            activeCards[id] = nil
+        end
+    end
+end
+
 local function makePage(items)
-    local group = create("CanvasGroup", {
+    local group = create("Frame", {
         Name = "Page",
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
@@ -878,69 +1044,42 @@ local function makePage(items)
     end
     scroller:GetPropertyChangedSignal("AbsoluteSize"):Connect(layoutCards)
     layoutCards()
-    for index, item in ipairs(items) do
-        local card = create("Frame", {
-            Name = "ScriptCard",
-            LayoutOrder = index,
-            BackgroundColor3 = Theme.Raised,
-            BorderSizePixel = 0,
-            ClipsDescendants = true,
-            ZIndex = 3,
-        }, scroller)
-        round(card, 8)
-        local image = create("ImageLabel", {
-            Name = "Thumbnail",
-            Size = UDim2.new(1, 0, 1, -48),
-            BackgroundColor3 = Theme.Window,
-            BorderSizePixel = 0,
-            Image = item.thumbnail,
-            ScaleType = Enum.ScaleType.Crop,
-            ZIndex = 4,
-        }, card)
-        round(image, 8)
-        create("TextLabel", {
-            Name = "Title",
-            Position = UDim2.new(0, 10, 1, -44),
-            Size = UDim2.new(1, -20, 0, 40),
-            BackgroundTransparency = 1,
-            Text = item.title,
-            TextColor3 = Theme.Text,
-            FontFace = Theme.Font,
-            TextSize = 13,
-            TextWrapped = true,
-            TextTruncate = Enum.TextTruncate.AtEnd,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            TextYAlignment = Enum.TextYAlignment.Center,
-            BorderSizePixel = 0,
-            ZIndex = 4,
-        }, card)
-    end
+    table.clear(activeCards)
+    reconcileCards(scroller, items)
     return group
 end
 
-local function presentPage(items, direction)
+local function presentPage(items, direction, target)
+    if activePageView and displayedPage == target then
+        reconcileCards(activePageView.Cards, items)
+        return
+    end
     clearPageMotion()
     local old = activePageView
     local incoming = makePage(items)
     activePageView = incoming
-    local distance = 22 * direction
-    incoming.Position = UDim2.fromOffset(distance, 0)
-    incoming.GroupTransparency = 1
-    local info = TweenInfo.new(0.24, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
-    local show = TweenService:Create(incoming, info, {Position = UDim2.fromOffset(0, 0), GroupTransparency = 0})
-    table.insert(pageMotion, show)
-    if old then
-        outgoingPageView = old
-        local hide = TweenService:Create(old, info, {Position = UDim2.fromOffset(-distance, 0), GroupTransparency = 1})
-        table.insert(pageMotion, hide)
-        hide.Completed:Once(function()
-            if outgoingPageView == old then
-                outgoingPageView = nil
-                old:Destroy()
-            end
-        end)
-        hide:Play()
+    displayedPage = target
+    if not old or direction == 0 then
+        if old then
+            old:Destroy()
+        end
+        incoming.Position = UDim2.fromOffset(0, 0)
+        return
     end
+    incoming.Position = UDim2.fromScale(direction, 0)
+    local info = TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+    local show = TweenService:Create(incoming, info, {Position = UDim2.fromOffset(0, 0)})
+    table.insert(pageMotion, show)
+    outgoingPageView = old
+    local hide = TweenService:Create(old, info, {Position = UDim2.fromScale(-direction, 0)})
+    table.insert(pageMotion, hide)
+    hide.Completed:Once(function()
+        if outgoingPageView == old then
+            outgoingPageView = nil
+            old:Destroy()
+        end
+    end)
+    hide:Play()
     show:Play()
 end
 
@@ -957,12 +1096,8 @@ local function loadCatalogue(target, direction)
     feedback.Text = "Loading..."
     updatePagination()
     task.spawn(function()
-        local cached = catalogCache[target]
-        local ok, data
-        if cached and os.clock() - cached.time < 45 then
-            ok, data = true, cached.data
-        else
-            ok, data = pcall(function()
+        lastCatalogueRequest = os.clock()
+        local ok, data = pcall(function()
                 local remote = ReplicatedStorage:FindFirstChild(CatalogRemote)
                 if RunService:IsStudio() then
                     remote = remote or ReplicatedStorage:WaitForChild(CatalogRemote, 8)
@@ -976,7 +1111,6 @@ local function loadCatalogue(target, direction)
                 end
                 return fetchCatalogue(target)
             end)
-        end
         if not alive or token ~= generation or selectedProvider ~= 3 then
             return
         end
@@ -998,20 +1132,13 @@ local function loadCatalogue(target, direction)
             loadCatalogue(totalPages, -1)
             return
         end
-        if not catalogCache[target] then
-            table.insert(cacheOrder, target)
-        end
-        catalogCache[target] = {data = data, time = os.clock()}
-        if #cacheOrder > 8 then
-            catalogCache[table.remove(cacheOrder, 1)] = nil
-        end
         page = target
         hasLoaded = true
         gui:SetAttribute("Page", page)
         gui:SetAttribute("TotalPages", totalPages)
         feedback.Visible = #data.items == 0
         feedback.Text = #data.items == 0 and "No scripts on this page." or ""
-        presentPage(data.items, direction)
+        presentPage(data.items, direction, target)
         updatePagination()
     end)
 end
@@ -1036,6 +1163,8 @@ local function switchCatalogue()
         activePageView:Destroy()
         activePageView = nil
     end
+    table.clear(activeCards)
+    displayedPage = nil
     page, totalPages = 1, nil
     feedback.Visible = false
     gui:SetAttribute("Page", 1)
@@ -1533,8 +1662,14 @@ end)
 
 bind(dotButton.Activated, function()
     setMode(restoreMode)
-    if selectedProvider == 3 and not hasLoaded and not loading then
-        loadCatalogue(1, 0)
+    if selectedProvider == 3 and not loading then
+        loadCatalogue(page, 0)
+    end
+end)
+
+bind(UserInputService.WindowFocused, function()
+    if alive and mode ~= "dot" and mode ~= "closed" and selectedProvider == 3 and not loading and os.clock() - lastCatalogueRequest >= 2 then
+        loadCatalogue(page, 0)
     end
 end)
 
