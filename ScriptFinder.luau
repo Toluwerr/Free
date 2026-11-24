@@ -1111,6 +1111,8 @@ local Lucide48 = table.freeze({
     ["eye"] = {Image = "rbxassetid://16898613353", Offset = Vector2.new(771, 563)},
     ["play"] = {Image = "rbxassetid://16898613699", Offset = Vector2.new(918, 257)},
     ["copy"] = {Image = "rbxassetid://16898613044", Offset = Vector2.new(918, 612)},
+    ["minus"] = {Image = "rbxassetid://16898613613", Offset = Vector2.new(771, 196)},
+    ["square"] = {Image = "rbxassetid://16898613777", Offset = Vector2.new(869, 710)},
     ["thumbs-up"] = {Image = "rbxassetid://16898613869", Offset = Vector2.new(771, 355)},
 })
 
@@ -1134,46 +1136,11 @@ end
 
 local function paintIcon(icon, name)
     icon:ClearAllChildren()
-    local function rectangle(x, y, width, height)
-        local segment = create("Frame", {
-            Position = UDim2.fromOffset(x, y),
-            Size = UDim2.fromOffset(width, height),
-            BackgroundColor3 = Theme.Text,
-            BorderSizePixel = 0,
-            ZIndex = icon.ZIndex + 1,
-        }, icon)
-        round(segment, 1)
-        return segment
-    end
-    local function outline(x, y, width, height)
-        local frame = create("Frame", {
-            Position = UDim2.fromOffset(x, y),
-            Size = UDim2.fromOffset(width, height),
-            BackgroundTransparency = 1,
-            BorderSizePixel = 0,
-            ZIndex = icon.ZIndex + 1,
-        }, icon)
-        round(frame, 2)
-        create("UIStroke", {
-            ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-            Color = Theme.Text,
-            Thickness = 1.5,
-        }, frame)
-    end
-    if name == "Minimize" then
-        rectangle(1.5, 8.25, 15, 1.5)
-    elseif name == "Maximize" then
-        outline(1.5, 1.5, 15, 15)
-    elseif name == "Restore" then
-        rectangle(5, 1.5, 11.5, 1.5)
-        rectangle(15, 3, 1.5, 10)
-        rectangle(5, 3, 1.5, 2)
-        rectangle(13, 11.5, 2, 1.5)
-        outline(1.5, 5.5, 11.5, 11)
-    elseif name == "Close" then
-        round(line(icon, 2.5, 2.5, 15.5, 15.5, 1.5, 0, Theme.Text), 1)
-        round(line(icon, 15.5, 2.5, 2.5, 15.5, 1.5, 0, Theme.Text), 1)
-    end
+    local glyph = if name == "Minimize" then "minus"
+        elseif name == "Maximize" then "square"
+        elseif name == "Restore" then "copy"
+        else "x"
+    lucideIcon(icon, glyph, 18, Theme.Text, icon.ZIndex + 1)
 end
 
 local function hover(button, transparency)
