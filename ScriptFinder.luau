@@ -207,6 +207,50 @@ local function fetchCatalogue(target)
     return {totalPages = math.max(1, math.floor(total)), items = items}
 end
 
+local function normalizeComments(comments)
+    local entries = {}
+    for _, comment in ipairs(comments) do
+        if #entries >= 20 then
+            break
+        end
+        if type(comment) == "table" then
+            local author = type(comment.commentBy) == "table" and comment.commentBy
+                or type(comment.owner) == "table" and comment.owner
+                or type(comment.author) == "table" and comment.author or {}
+            local message = plainText(comment.text, 1000) or plainText(comment.content, 1000) or plainText(comment.message, 1000)
+            if message then
+                table.insert(entries, {
+                    id = identifier(comment._id) and comment._id or nil,
+                    author = plainText(author.username, 100),
+                    text = message,
+                    createdAt = plainText(comment.createdAt, 64),
+                    likes = counter(comment.likeCount),
+                })
+            end
+        end
+    end
+    return entries
+end
+
+local function fetchComments(id, target)
+    if not identifier(id) or type(target) ~= "number" or target < 1
+        or target > 10000 or target ~= math.floor(target) then
+        error("Invalid comments request", 0)
+    end
+    local url = "https://scriptblox.com/api/comment/" .. HttpService:UrlEncode(id)
+        .. string.format("?page=%d&max=20", target)
+    local decoded = readResponse(url)
+    local result = decoded.result
+    if type(result) ~= "table" or type(result.comments) ~= "table" then
+        error("Invalid comments response", 0)
+    end
+    local pages = counter(result.totalPages)
+    return {
+        comments = normalizeComments(result.comments),
+        totalPages = pages and math.max(1, math.min(10000, pages)) or target,
+    }
+end
+
 local function fetchDetails(slug)
     if not identifier(slug) then
         error("Invalid script identifier", 0)
@@ -247,20 +291,7 @@ local function fetchDetails(slug)
     info.description = plainText(item.description, 8000) or plainText(item.features, 8000)
     local comments = type(item.comments) == "table" and item.comments or decoded.comments
     if type(comments) == "table" then
-        info.comments = {}
-        for _, comment in ipairs(comments) do
-            if #info.comments >= 30 then
-                break
-            end
-            if type(comment) == "table" then
-                local author = type(comment.owner) == "table" and comment.owner
-                    or type(comment.author) == "table" and comment.author or {}
-                local message = plainText(comment.content, 1000) or plainText(comment.text, 1000) or plainText(comment.message, 1000)
-                if message then
-                    table.insert(info.comments, {author = plainText(author.username, 100), text = message})
-                end
-            end
-        end
+        info.comments = normalizeComments(comments)
     end
     return info
 end
@@ -276,27 +307,34 @@ if RunService:IsServer() then
     local cache, order, recent, pending = {}, {}, {}, {}
     local windowStart, requests = os.clock(), 0
     remote.OnServerInvoke = function(player, target)
+        local isComments = type(target) == "table" and target.action == "comments"
         local isDetail = type(target) == "string"
-        if isDetail then
+        if isComments then
+            if not identifier(target.id) or type(target.page) ~= "number" or target.page < 1
+                or target.page > 10000 or target.page ~= math.floor(target.page) then
+                return {error = "Invalid comments request"}
+            end
+        elseif isDetail then
             if not identifier(target) then
                 return {error = "Invalid script identifier"}
             end
         elseif type(target) ~= "number" or target ~= target or target < 1 or target > 1000000 or target ~= math.floor(target) then
             return {error = "Invalid page"}
         end
+        local key = isComments and ("comments:" .. target.id .. ":" .. tostring(target.page)) or target
         local now = os.clock()
         local activity = recent[player] or {}
         recent[player] = activity
-        local kind = isDetail and "detail" or "page"
+        local kind = isComments and "comments" or (isDetail and "detail" or "page")
         if now - (activity[kind] or -math.huge) < (isDetail and 0.25 or 0.5) then
             return {error = "Please try again"}
         end
         activity[kind] = now
-        local entry = cache[target]
-        if entry and now - entry.time < (isDetail and 45 or 2) then
+        local entry = cache[key]
+        if entry and now - entry.time < (isComments and 30 or (isDetail and 45 or 2)) then
             return entry.data
         end
-        if pending[target] then
+        if pending[key] then
             return {error = "Already loading"}
         end
         if now - windowStart >= 60 then
@@ -306,17 +344,22 @@ if RunService:IsServer() then
             return {error = "Request limit reached"}
         end
         requests += 1
-        pending[target] = true
-        local ok, data = pcall(isDetail and fetchDetails or fetchCatalogue, target)
-        pending[target] = nil
+        pending[key] = true
+        local ok, data
+        if isComments then
+            ok, data = pcall(fetchComments, target.id, target.page)
+        else
+            ok, data = pcall(isDetail and fetchDetails or fetchCatalogue, target)
+        end
+        pending[key] = nil
         if not ok then
             warn("ScriptFinder: " .. tostring(data))
             return {error = "Server HTTP request failed; see server output"}
         end
-        if not cache[target] then
-            table.insert(order, target)
+        if not cache[key] then
+            table.insert(order, key)
         end
-        cache[target] = {time = os.clock(), data = data}
+        cache[key] = {time = os.clock(), data = data}
         if #order > 64 then
             cache[table.remove(order, 1)] = nil
         end
@@ -1523,6 +1566,9 @@ local function requestData(target)
     if remote and remote:IsA("RemoteFunction") then
         return remote:InvokeServer(target)
     end
+    if type(target) == "table" and target.action == "comments" then
+        return fetchComments(target.id, target.page)
+    end
     return type(target) == "number" and fetchCatalogue(target) or fetchDetails(target)
 end
 
@@ -1681,26 +1727,105 @@ local function renderDetails(body, item, data)
         ZIndex = 8,
     }, commentsCard)
     local commentsLayout = create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 8)}, comments)
-    if data and type(data.comments) == "table" then
-        if #data.comments == 0 then
-            detailText(comments, "Empty", "No comments.", 12, true, 1)
-        else
-            for i, comment in ipairs(data.comments) do
-                local entry = create("Frame", {
-                    Name = "Comment",
-                    LayoutOrder = i,
-                    Size = UDim2.new(1, 0, 0, 0),
-                    AutomaticSize = Enum.AutomaticSize.Y,
-                    BackgroundTransparency = 1,
-                    ZIndex = 8,
-                }, comments)
-                create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 3)}, entry)
-                detailText(entry, "Author", comment.author or "Unknown author", 11, true, 1)
-                detailText(entry, "Message", comment.text, 12, false, 2)
+    local commentsStatus = detailText(comments, "Status", "Loading comments…", 12, true, 1)
+    local commentPage, commentCount = 1, 0
+    local seenComments = {}
+    local fetchingComments = false
+    local nextCommentsPage
+    local moreButton
+    local function appendComments(entries)
+        for _, comment in ipairs(entries) do
+            if commentCount >= 200 then
+                break
+            end
+            if comment.id and seenComments[comment.id] then
+                continue
+            end
+            if comment.id then
+                seenComments[comment.id] = true
+            end
+            commentCount += 1
+            local entry = create("Frame", {
+                Name = "Comment",
+                LayoutOrder = commentCount,
+                Size = UDim2.new(1, -4, 0, 0),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                BackgroundTransparency = 1,
+                ZIndex = 8,
+            }, comments)
+            create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 3)}, entry)
+            detailText(entry, "Author", comment.author or "Unknown author", 11, true, 1)
+            detailText(entry, "Message", comment.text, 12, false, 2)
+            if comment.likes ~= nil then
+                local likes = detailText(entry, "Likes", tostring(comment.likes) .. (comment.likes == 1 and " like" or " likes"), 10, true, 3)
+                likes.ZIndex = 8
             end
         end
-    elseif data then
-        detailText(comments, "Unavailable", "Comments are not returned by the public API.", 12, true, 1)
+    end
+    local function loadComments(target)
+        if fetchingComments or not data or not alive or not comments:IsDescendantOf(gui) then
+            return
+        end
+        fetchingComments = true
+        commentsStatus.Text = "Loading comments…"
+        commentsStatus.LayoutOrder = 999
+        commentsStatus.Visible = true
+        if moreButton then
+            moreButton.Visible = false
+        end
+        task.spawn(function()
+            local ok, response = pcall(requestData, {action = "comments", id = data.id or item.id, page = target})
+            if not alive or not comments:IsDescendantOf(gui) then
+                return
+            end
+            fetchingComments = false
+            if not ok or type(response) ~= "table" or type(response.comments) ~= "table" then
+                if target == 1 and commentCount == 0 and type(data.comments) == "table" and #data.comments > 0 then
+                    appendComments(data.comments)
+                    commentsStatus.Text = "Additional comments unavailable."
+                else
+                    commentsStatus.Text = "Comments could not be loaded."
+                end
+                nextCommentsPage = target
+                if moreButton then
+                    moreButton.Text = "Retry"
+                    moreButton.Visible = true
+                end
+                return
+            end
+            commentPage = target
+            appendComments(response.comments)
+            commentsStatus.Text = commentCount == 0 and "No comments." or ""
+            commentsStatus.Visible = commentCount == 0
+            nextCommentsPage = commentPage < response.totalPages and commentCount < 200 and commentPage + 1 or nil
+            if moreButton then
+                moreButton.Text = "Load more"
+                moreButton.Visible = nextCommentsPage ~= nil
+            end
+        end)
+    end
+    moreButton = create("TextButton", {
+        Name = "MoreComments",
+        LayoutOrder = 1000,
+        Size = UDim2.new(1, -4, 0, 24),
+        BackgroundColor3 = Theme.Window,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "Load more",
+        FontFace = Theme.Font,
+        TextColor3 = Theme.Text,
+        TextSize = 11,
+        Visible = false,
+        ZIndex = 9,
+    }, comments)
+    round(moreButton, 6)
+    moreButton.Activated:Connect(function()
+        if nextCommentsPage then
+            loadComments(nextCommentsPage)
+        end
+    end)
+    if data then
+        task.defer(loadComments, 1)
     end
 
     local card = create("Frame", {
@@ -1812,7 +1937,9 @@ local function renderDetails(body, item, data)
         local rightWidth = math.max(1, width - gap - leftWidth)
         left.Position = UDim2.fromOffset(0, 0)
         left.Size = UDim2.fromOffset(leftWidth, height)
-        local imageWidth = math.max(1, math.min(leftWidth - 2, math.floor(math.max(1, height - 2) * 16 / 9)))
+        local reserved = data and math.min(126, math.max(64, math.floor(height * 0.38))) or 0
+        local availableHeight = math.max(1, height - reserved - (data and gap or 0) - 2)
+        local imageWidth = math.max(1, math.min(leftWidth - 2, math.floor(availableHeight * 16 / 9)))
         local imageHeight = math.max(1, math.floor(imageWidth * 9 / 16))
         picture.Position = UDim2.fromOffset(math.floor((leftWidth - imageWidth) / 2), 1)
         picture.Size = UDim2.fromOffset(imageWidth, imageHeight)
