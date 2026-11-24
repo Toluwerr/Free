@@ -251,6 +251,36 @@ local function fetchComments(id, target)
     }
 end
 
+local function fetchCode(id)
+    if not identifier(id) then
+        error("Invalid source identifier", 0)
+    end
+    local url = "https://scriptblox.com/api/script/raw/" .. HttpService:UrlEncode(id)
+    local ok, source = pcall(function()
+        if RunService:IsServer() then
+            return HttpService:GetAsync(url, true, {Accept = "text/plain"})
+        end
+        return game:HttpGet(url)
+    end)
+    local function sourceIsValid(value)
+        return type(value) == "string" and #value > 0 and #value <= 350000
+            and not value:match("^%s*<")
+            and not value:match('^%s*{"')
+            and value:find("%S") ~= nil
+    end
+    if not ok or not sourceIsValid(source) then
+        local decoded = readResponse("https://scriptblox.com/api/script/" .. HttpService:UrlEncode(id))
+        local item = decoded.script
+        if type(item) == "table" then
+            source = item.script or item.source or item.code
+        end
+    end
+    if not sourceIsValid(source) then
+        error("Script source unavailable or exceeds limit", 0)
+    end
+    return {source = source}
+end
+
 local function fetchDetails(slug)
     if not identifier(slug) then
         error("Invalid script identifier", 0)
@@ -308,8 +338,13 @@ if RunService:IsServer() then
     local windowStart, requests = os.clock(), 0
     remote.OnServerInvoke = function(player, target)
         local isComments = type(target) == "table" and target.action == "comments"
+        local isCode = type(target) == "table" and target.action == "code"
         local isDetail = type(target) == "string"
-        if isComments then
+        if isCode then
+            if not identifier(target.id) then
+                return {error = "Invalid source identifier"}
+            end
+        elseif isComments then
             if not identifier(target.id) or type(target.page) ~= "number" or target.page < 1
                 or target.page > 10000 or target.page ~= math.floor(target.page) then
                 return {error = "Invalid comments request"}
@@ -321,17 +356,18 @@ if RunService:IsServer() then
         elseif type(target) ~= "number" or target ~= target or target < 1 or target > 1000000 or target ~= math.floor(target) then
             return {error = "Invalid page"}
         end
-        local key = isComments and ("comments:" .. target.id .. ":" .. tostring(target.page)) or target
+        local key = isCode and ("code:" .. target.id)
+            or (isComments and ("comments:" .. target.id .. ":" .. tostring(target.page))) or target
         local now = os.clock()
         local activity = recent[player] or {}
         recent[player] = activity
-        local kind = isComments and "comments" or (isDetail and "detail" or "page")
-        if now - (activity[kind] or -math.huge) < (isDetail and 0.25 or 0.5) then
+        local kind = isCode and "code" or (isComments and "comments" or (isDetail and "detail" or "page"))
+        if now - (activity[kind] or -math.huge) < (isCode and 0.6 or (isDetail and 0.25 or 0.5)) then
             return {error = "Please try again"}
         end
         activity[kind] = now
         local entry = cache[key]
-        if entry and now - entry.time < (isComments and 30 or (isDetail and 45 or 2)) then
+        if entry and now - entry.time < (isCode and 90 or (isComments and 30 or (isDetail and 45 or 2))) then
             return entry.data
         end
         if pending[key] then
@@ -346,7 +382,9 @@ if RunService:IsServer() then
         requests += 1
         pending[key] = true
         local ok, data
-        if isComments then
+        if isCode then
+            ok, data = pcall(fetchCode, target.id)
+        elseif isComments then
             ok, data = pcall(fetchComments, target.id, target.page)
         else
             ok, data = pcall(isDetail and fetchDetails or fetchCatalogue, target)
@@ -566,6 +604,7 @@ local Lucide48 = table.freeze({
     ["gamepad-2"] = {Image = "rbxassetid://16898613353", Offset = Vector2.new(710, 967)},
     ["eye"] = {Image = "rbxassetid://16898613353", Offset = Vector2.new(771, 563)},
     ["play"] = {Image = "rbxassetid://16898613699", Offset = Vector2.new(918, 257)},
+    ["copy"] = {Image = "rbxassetid://16898613044", Offset = Vector2.new(918, 612)},
     ["thumbs-up"] = {Image = "rbxassetid://16898613869", Offset = Vector2.new(771, 355)},
 })
 
@@ -1569,6 +1608,9 @@ local function requestData(target)
     if type(target) == "table" and target.action == "comments" then
         return fetchComments(target.id, target.page)
     end
+    if type(target) == "table" and target.action == "code" then
+        return fetchCode(target.id)
+    end
     return type(target) == "number" and fetchCatalogue(target) or fetchDetails(target)
 end
 
@@ -1929,6 +1971,174 @@ local function renderDetails(body, item, data)
         status.ZIndex = 9
     end
 
+    local codeCard = create("Frame", {
+        Name = "CodeCard",
+        BackgroundColor3 = Theme.Raised,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        Visible = data ~= nil,
+        ZIndex = 7,
+    }, body)
+    round(codeCard, 8)
+    local codeHeader = create("Frame", {
+        Name = "CodeHeader",
+        Size = UDim2.new(1, 0, 0, 37),
+        BackgroundTransparency = 1,
+        ZIndex = 8,
+    }, codeCard)
+    create("TextLabel", {
+        Name = "Heading",
+        Position = UDim2.fromOffset(12, 0),
+        Size = UDim2.new(1, -102, 1, 0),
+        BackgroundTransparency = 1,
+        Text = "Code",
+        FontFace = Theme.Font,
+        TextSize = 13,
+        TextColor3 = Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 9,
+    }, codeHeader)
+    local function sourceButton(name, iconName, offset, color)
+        local button = create("TextButton", {
+            Name = name,
+            AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, offset, 0, 5),
+            Size = UDim2.fromOffset(27, 27),
+            BackgroundColor3 = color,
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Text = "",
+            ZIndex = 9,
+        }, codeHeader)
+        round(button, 6)
+        lucideIcon(button, iconName, 15, Theme.Text, 10)
+        button.MouseEnter:Connect(function()
+            if button.Parent then hover(button, 0.18) end
+        end)
+        button.MouseLeave:Connect(function()
+            if button.Parent then hover(button, 0) end
+        end)
+        return button
+    end
+    local copyButton = sourceButton("Copy", "copy", -44, Theme.Window)
+    local executeButton = sourceButton("Execute", "play", -11, Theme.Accent)
+    local codeScroll = create("ScrollingFrame", {
+        Name = "Code",
+        Position = UDim2.fromOffset(10, 38),
+        Size = UDim2.new(1, -20, 1, -48),
+        BackgroundColor3 = Theme.Window,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.fromOffset(0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.XY,
+        ScrollingDirection = Enum.ScrollingDirection.XY,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Theme.Divider,
+        ZIndex = 8,
+    }, codeCard)
+    round(codeScroll, 6)
+    local codeText = create("TextLabel", {
+        Name = "Source",
+        Position = UDim2.fromOffset(10, 8),
+        Size = UDim2.fromOffset(0, 0),
+        AutomaticSize = Enum.AutomaticSize.XY,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Text = "Loading code…",
+        RichText = false,
+        TextWrapped = false,
+        TextColor3 = Theme.Text,
+        FontFace = Font.new("rbxasset://fonts/families/RobotoMono.json"),
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        ZIndex = 9,
+    }, codeScroll)
+    create("UIPadding", {
+        PaddingBottom = UDim.new(0, 8),
+        PaddingRight = UDim.new(0, 10),
+    }, codeScroll)
+    local codeStatus = create("TextLabel", {
+        Name = "Status",
+        AnchorPoint = Vector2.new(1, 1),
+        Position = UDim2.new(1, -12, 1, -10),
+        Size = UDim2.new(1, -24, 0, 18),
+        BackgroundColor3 = Theme.Window,
+        BackgroundTransparency = 0.12,
+        BorderSizePixel = 0,
+        Visible = false,
+        Text = "",
+        FontFace = Theme.Font,
+        TextSize = 11,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        TextColor3 = Theme.Text,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        ZIndex = 11,
+    }, codeCard)
+    local scriptSource
+    local statusGeneration = 0
+    local function showStatus(value)
+        statusGeneration += 1
+        local token = statusGeneration
+        codeStatus.Text = value
+        codeStatus.Visible = value ~= ""
+        if value ~= "" then
+            task.delay(3, function()
+                if codeStatus.Parent and token == statusGeneration then
+                    codeStatus.Visible = false
+                end
+            end)
+        end
+    end
+    copyButton.Activated:Connect(function()
+        if not scriptSource then return end
+        local clipboard = type(setclipboard) == "function" and setclipboard
+            or (type(toclipboard) == "function" and toclipboard)
+        if not clipboard then
+            showStatus("Clipboard unavailable")
+            return
+        end
+        local ok = pcall(clipboard, scriptSource)
+        showStatus(ok and "Copied" or "Unable to copy")
+    end)
+    local executing = false
+    executeButton.Activated:Connect(function()
+        if not scriptSource or executing or type(loadstring) ~= "function" then
+            if type(loadstring) ~= "function" then
+                showStatus("Execution unavailable")
+            end
+            return
+        end
+        executing = true
+        showStatus("Running…")
+        task.spawn(function()
+            local ok, fn = pcall(loadstring, scriptSource)
+            if not ok or type(fn) ~= "function" then
+                executing = false
+                if codeCard.Parent then showStatus("Compile failed: " .. tostring(fn):sub(1, 100)) end
+                return
+            end
+            local ran, err = pcall(fn)
+            executing = false
+            if codeCard.Parent then
+                showStatus(ran and "Executed" or ("Execution failed: " .. tostring(err):sub(1, 90)))
+            end
+        end)
+    end)
+    local function setCode(source, message)
+        if not codeCard.Parent then return end
+        if type(source) == "string" and source ~= "" then
+            scriptSource = source
+            codeText.Text = #source > 70000
+                and (source:sub(1, 70000) .. "\n\n… Preview truncated; copy to get complete source.")
+                or source
+        else
+            scriptSource = nil
+            codeText.Text = message or "Code unavailable."
+        end
+        copyButton.Visible = scriptSource ~= nil
+        executeButton.Visible = scriptSource ~= nil
+        codeScroll.CanvasPosition = Vector2.zero
+    end
     local function resize()
         local width = math.max(1, math.floor(body.AbsoluteSize.X))
         local height = math.max(1, math.floor(body.AbsoluteSize.Y))
@@ -1948,7 +2158,13 @@ local function renderDetails(body, item, data)
         commentsCard.Size = UDim2.fromOffset(leftWidth, commentHeight)
         commentsCard.Visible = data ~= nil and commentHeight >= 64
         card.Position = UDim2.fromOffset(leftWidth + gap, 0)
-        card.Size = UDim2.fromOffset(rightWidth, height)
+        local informationHeight = data and math.max(1, math.floor(height * 0.55)) or height
+        card.Size = UDim2.fromOffset(rightWidth, informationHeight)
+        codeCard.Visible = data ~= nil
+        if data then
+            codeCard.Position = UDim2.fromOffset(leftWidth + gap, informationHeight + gap)
+            codeCard.Size = UDim2.fromOffset(rightWidth, math.max(1, height - informationHeight - gap))
+        end
     end
 
     local function updateScroll()
@@ -1978,6 +2194,9 @@ local function renderDetails(body, item, data)
     resize()
     updateScroll()
     updateComments()
+    if data then
+        return setCode
+    end
 end
 
 closeDetails = function()
@@ -2059,7 +2278,20 @@ openDetails = function(item)
             return
         end
         updateCard(item, data)
-        renderDetails(scroller, item, data)
+        local setCode = renderDetails(scroller, item, data)
+        if not setCode then return end
+        task.spawn(function()
+            local ok, response = pcall(requestData, {action = "code", id = item.slug})
+            if not alive or token ~= detailGeneration or detailView ~= view then
+                return
+            end
+            if ok and type(response) == "table"
+                and type(response.source) == "string" and not response.error then
+                setCode(response.source)
+            else
+                setCode(nil, "Code could not be loaded.")
+            end
+        end)
     end)
 end
 
