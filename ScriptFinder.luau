@@ -19,30 +19,62 @@ local function numericId(value)
 end
 
 local function imageAsset(value)
-    if type(value) ~= "string" then
+    if type(value) == "number" then
+        local id = numericId(value)
+        return id and ("rbxassetid://" .. id) or ""
+    end
+    if type(value) ~= "string" or #value > 1024 then
         return ""
     end
     if value:match("^rbxassetid://%d+$") or value:match("^rbxthumb://type=[%w]+&id=%d+&w=%d+&h=%d+$") then
         return value
     end
-    local id = value:match("^https://www%.roblox%.com/asset/%?id=(%d+)$")
-        or value:match("^https://assetdelivery%.roblox%.com/v1/asset/%?id=(%d+)$")
-        or value:match("^https://www%.roblox%.com/asset%?id=(%d+)$")
-    return id and ("rbxassetid://" .. id) or ""
+    local direct = value:match("^%d+$")
+    if direct then
+        local id = numericId(direct)
+        return id and ("rbxassetid://" .. id) or ""
+    end
+    local host, tail = value:match("^https://([^/]+)(/[^%s]*)$")
+    if not host then
+        return ""
+    end
+    host = string.lower(host)
+    if host == "www.roblox.com" or host == "roblox.com" or host == "assetdelivery.roblox.com" then
+        local assetId = tail:match("^/asset/?%?id=(%d+)")
+            or tail:match("^/v1/asset/?%?id=(%d+)")
+        if assetId then
+            return "rbxassetid://" .. assetId
+        end
+        local thumbId = tail:match("^/asset%-thumbnail/image%?assetId=(%d+)")
+        if thumbId then
+            return "rbxthumb://type=Asset&id=" .. thumbId .. "&w=420&h=420"
+        end
+        local userId = tail:match("^/headshot%-thumbnail/image%?userId=(%d+)")
+        if userId then
+            return "rbxthumb://type=AvatarHeadShot&id=" .. userId .. "&w=150&h=150"
+        end
+    end
+    if (host == "rbxcdn.com" or host:match("^[%w%-]+%.rbxcdn%.com$")) and tail:match("^/[%w%-%._/]+$") then
+        return value
+    end
+    return ""
 end
 
 local function thumbnailFor(entry)
     local info = type(entry.game) == "table" and entry.game or {}
     local image = imageAsset(entry.image)
-    if image ~= "" then
+    if image:sub(1, 5) == "rbxas" or image:sub(1, 8) == "rbxthumb" then
         return image
     end
-    image = imageAsset(info.imageUrl)
-    if image ~= "" then
-        return image
+    local oldImage = imageAsset(info.imageUrl)
+    if oldImage:sub(1, 5) == "rbxas" or oldImage:sub(1, 8) == "rbxthumb" then
+        return oldImage
     end
     local id = numericId(info.placeId or entry.placeId or info.gameId)
-    return id and ("rbxthumb://type=GameThumbnail&id=" .. id .. "&w=384&h=216") or ""
+    if id then
+        return "rbxthumb://type=GameThumbnail&id=" .. id .. "&w=384&h=216"
+    end
+    return image ~= "" and image or oldImage
 end
 
 local function counter(...)
@@ -155,6 +187,9 @@ local function fetchDetails(slug)
     local owner = type(item.owner) == "table" and item.owner or {}
     info.author = plainText(owner.username, 100)
     info.avatar = imageAsset(owner.profilePicture)
+    if info.avatar == "" then
+        info.avatar = imageAsset(owner.avatarUrl or owner.avatar)
+    end
     local userId = numericId(owner.robloxUserId)
     if info.avatar == "" and userId then
         info.avatar = "rbxthumb://type=AvatarHeadShot&id=" .. userId .. "&w=150&h=150"
@@ -1330,133 +1365,246 @@ local function detailText(parent, name, text, size, muted, order)
     }, parent)
 end
 
-local function renderDetails(scroller, item, data)
-    scroller:ClearAllChildren()
-    create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 12)}, scroller)
-    create("UIPadding", {PaddingBottom = UDim.new(0, 12), PaddingRight = UDim.new(0, 6)}, scroller)
-    local thumbnail = data and data.thumbnail ~= "" and data.thumbnail or item.thumbnail
-    if thumbnail and thumbnail ~= "" then
-        local picture = create("ImageLabel", {
-            Name = "Thumbnail",
-            LayoutOrder = 1,
-            Size = UDim2.new(1, 0, 0, 160),
-            BackgroundColor3 = Theme.Raised,
-            BorderSizePixel = 0,
-            Image = thumbnail,
-            ScaleType = Enum.ScaleType.Crop,
-            ZIndex = 7,
-        }, scroller)
-        round(picture, 8)
-        local function sizePicture()
-            picture.Size = UDim2.new(1, 0, 0, math.floor(math.clamp(scroller.AbsoluteSize.X * 9 / 16, 120, 300)))
-        end
-        scroller:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
-            if picture.Parent then sizePicture() end
-        end)
-        sizePicture()
-    end
-    detailText(scroller, "Title", data and data.title or item.title, 19, false, 2)
-    if not data then
-        detailText(scroller, "Loading", "Loading details…", 13, true, 3)
-        return
-    end
-    local author = create("Frame", {
-        Name = "Author",
-        LayoutOrder = 3,
-        Size = UDim2.new(1, 0, 0, 44),
+local function renderDetails(body, item, data)
+    body:ClearAllChildren()
+
+    local left = create("Frame", {
+        Name = "PreviewColumn",
         BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
         ZIndex = 7,
-    }, scroller)
-    local hasAvatar = data.avatar and data.avatar ~= ""
-    if hasAvatar then
-        local avatar = create("ImageLabel", {
-            Name = "Avatar",
-            Size = UDim2.fromOffset(42, 42),
-            BackgroundColor3 = Theme.Raised,
-            BorderSizePixel = 0,
-            Image = data.avatar,
-            ScaleType = Enum.ScaleType.Crop,
-            ZIndex = 8,
-        }, author)
-        round(avatar, 21)
-    end
-    local authorText = create("Frame", {
-        Name = "AuthorText",
-        Position = UDim2.fromOffset(hasAvatar and 52 or 0, 0),
-        Size = UDim2.new(1, hasAvatar and -52 or 0, 1, 0),
-        BackgroundTransparency = 1,
-        ZIndex = 8,
-    }, author)
-    detailText(authorText, "Username", data.author or "Author unavailable", 14, false, 1)
-    local byline = {}
-    if data.level ~= nil then
-        table.insert(byline, "Level " .. tostring(data.level))
-    end
-    if data.bumped == true then
-        table.insert(byline, data.bumpedAt and ("Bumped " .. data.bumpedAt:sub(1, 10)) or "Bumped")
-    elseif data.bumped == false then
-        table.insert(byline, "Not bumped")
-    end
-    local meta = detailText(authorText, "Metadata", table.concat(byline, "  ·  "), 11, true, 2)
-    meta.Position = UDim2.fromOffset(0, 20)
-    local stats = create("Frame", {
-        Name = "Statistics",
-        LayoutOrder = 4,
-        Size = UDim2.new(1, 0, 0, 34),
+    }, body)
+    local picture = create("ImageLabel", {
+        Name = "Thumbnail",
         BackgroundColor3 = Theme.Raised,
         BorderSizePixel = 0,
+        Image = data and data.thumbnail and data.thumbnail ~= "" and data.thumbnail or item.thumbnail,
+        ScaleType = Enum.ScaleType.Fit,
+        ZIndex = 8,
+    }, left)
+    round(picture, 8)
+
+    local commentsCard = create("Frame", {
+        Name = "CommentsCard",
+        BackgroundColor3 = Theme.Raised,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
         ZIndex = 7,
-    }, scroller)
-    round(stats, 8)
-    for i, metric in ipairs({{"views","eye"}, {"executions","play"}, {"likes","thumbs-up"}}) do
-        local cell = create("Frame", {
-            Position = UDim2.fromScale((i - 1) / 3, 0),
-            Size = UDim2.new(1 / 3, 0, 1, 0),
-            BackgroundTransparency = 1,
-            ZIndex = 8,
-        }, stats)
-        local icon = lucideIcon(cell, metric[2], 14, Theme.Text, 9)
-        icon.AnchorPoint = Vector2.new(0, 0.5)
-        icon.Position = UDim2.new(0, 10, 0.5, 0)
-        create("TextLabel", {
-            Name = "Count",
-            Position = UDim2.fromOffset(30, 0),
-            Size = UDim2.new(1, -34, 1, 0),
-            BackgroundTransparency = 1,
-            Text = formatCounter(item[metric[1]]),
-            TextColor3 = Theme.Text,
-            FontFace = Theme.Font,
-            TextSize = 13,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            ZIndex = 9,
-        }, cell)
-    end
-    detailText(scroller, "DescriptionHeading", "Description", 14, false, 5)
-    detailText(scroller, "Description", data.description or "No description provided.", 13, false, 6)
-    detailText(scroller, "CommentsHeading", "Comments", 14, false, 7)
-    if type(data.comments) == "table" then
+        Visible = data ~= nil,
+    }, left)
+    round(commentsCard, 8)
+    local commentsHeading = detailText(commentsCard, "Heading", "Comments", 13, false, 1)
+    commentsHeading.Position = UDim2.fromOffset(12, 10)
+    commentsHeading.Size = UDim2.new(1, -24, 0, 20)
+    commentsHeading.AutomaticSize = Enum.AutomaticSize.None
+    local comments = create("ScrollingFrame", {
+        Name = "Comments",
+        Position = UDim2.fromOffset(12, 34),
+        Size = UDim2.new(1, -24, 1, -44),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.fromOffset(0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ScrollingEnabled = false,
+        ScrollBarThickness = 0,
+        ScrollBarImageColor3 = Theme.Divider,
+        ZIndex = 8,
+    }, commentsCard)
+    local commentsLayout = create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 8)}, comments)
+    if data and type(data.comments) == "table" then
         if #data.comments == 0 then
-            detailText(scroller, "NoComments", "No comments.", 12, true, 8)
+            detailText(comments, "Empty", "No comments.", 12, true, 1)
+        else
+            for i, comment in ipairs(data.comments) do
+                local entry = create("Frame", {
+                    Name = "Comment",
+                    LayoutOrder = i,
+                    Size = UDim2.new(1, 0, 0, 0),
+                    AutomaticSize = Enum.AutomaticSize.Y,
+                    BackgroundTransparency = 1,
+                    ZIndex = 8,
+                }, comments)
+                create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 3)}, entry)
+                detailText(entry, "Author", comment.author or "Unknown author", 11, true, 1)
+                detailText(entry, "Message", comment.text, 12, false, 2)
+            end
         end
-        for i, comment in ipairs(data.comments) do
-            local box = create("Frame", {
-                Name = "Comment",
-                LayoutOrder = 8 + i,
-                Size = UDim2.new(1, 0, 0, 0),
-                AutomaticSize = Enum.AutomaticSize.Y,
-                BackgroundColor3 = Theme.Raised,
-                BorderSizePixel = 0,
-                ZIndex = 7,
-            }, scroller)
-            round(box, 8)
-            create("UIPadding", {PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10), PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10)}, box)
-            create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4)}, box)
-            detailText(box, "Author", comment.author or "Unknown author", 12, true, 1)
-            detailText(box, "Message", comment.text, 13, false, 2)
-        end
-    else
-        detailText(scroller, "Unavailable", "Comments are not returned by the public API.", 12, true, 8)
+    elseif data then
+        detailText(comments, "Unavailable", "Comments are not returned by the public API.", 12, true, 1)
     end
+
+    local card = create("Frame", {
+        Name = "InformationCard",
+        BackgroundColor3 = Theme.Raised,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        ZIndex = 7,
+    }, body)
+    round(card, 8)
+    local scroll = create("ScrollingFrame", {
+        Name = "Information",
+        Position = UDim2.fromOffset(12, 12),
+        Size = UDim2.new(1, -24, 1, -24),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.fromOffset(0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ScrollingEnabled = false,
+        ScrollBarThickness = 0,
+        ScrollBarImageColor3 = Theme.Divider,
+        VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
+        ZIndex = 8,
+    }, card)
+    local stack = create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 10)}, scroll)
+    local title = detailText(scroll, "Title", data and data.title or item.title, 17, false, 1)
+    title.ZIndex = 9
+
+    if data then
+        local author = create("Frame", {
+            Name = "Author",
+            LayoutOrder = 2,
+            Size = UDim2.new(1, 0, 0, 42),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            ZIndex = 9,
+        }, scroll)
+        local hasAvatar = data.avatar and data.avatar ~= ""
+        if hasAvatar then
+            local avatar = create("ImageLabel", {
+                Name = "Avatar",
+                Size = UDim2.fromOffset(36, 36),
+                Position = UDim2.fromOffset(0, 3),
+                BackgroundColor3 = Theme.Window,
+                BorderSizePixel = 0,
+                Image = data.avatar,
+                ScaleType = Enum.ScaleType.Fit,
+                ZIndex = 10,
+            }, author)
+            round(avatar, 18)
+        end
+        local byline = create("Frame", {
+            Name = "Byline",
+            Position = UDim2.fromOffset(hasAvatar and 46 or 0, 0),
+            Size = UDim2.new(1, hasAvatar and -46 or 0, 1, 0),
+            BackgroundTransparency = 1,
+            ClipsDescendants = true,
+            ZIndex = 9,
+        }, author)
+        local name = detailText(byline, "Username", data.author or "Author unavailable", 13, false, 1)
+        name.Size = UDim2.new(1, 0, 0, 20)
+        name.AutomaticSize = Enum.AutomaticSize.None
+        name.TextWrapped = false
+        name.TextTruncate = Enum.TextTruncate.AtEnd
+        name.ZIndex = 10
+        local parts = {}
+        if data.level ~= nil then
+            table.insert(parts, "Level " .. tostring(data.level))
+        end
+        if data.bumped == true then
+            table.insert(parts, data.bumpedAt and ("Bumped " .. data.bumpedAt:sub(1, 10)) or "Bumped")
+        elseif data.bumped == false then
+            table.insert(parts, "Not bumped")
+        end
+        local meta = detailText(byline, "Metadata", table.concat(parts, "  ·  "), 11, true, 2)
+        meta.Position = UDim2.fromOffset(0, 20)
+        meta.Size = UDim2.new(1, 0, 0, 20)
+        meta.AutomaticSize = Enum.AutomaticSize.None
+        meta.TextWrapped = false
+        meta.TextTruncate = Enum.TextTruncate.AtEnd
+        meta.ZIndex = 10
+
+        local stats = create("Frame", {
+            Name = "Statistics",
+            LayoutOrder = 3,
+            Size = UDim2.new(1, 0, 0, 30),
+            BackgroundColor3 = Theme.Window,
+            BorderSizePixel = 0,
+            ZIndex = 9,
+        }, scroll)
+        round(stats, 6)
+        for i, metric in ipairs({{"views", "eye"}, {"executions", "play"}, {"likes", "thumbs-up"}}) do
+            local cell = create("Frame", {
+                Position = UDim2.fromScale((i - 1) / 3, 0),
+                Size = UDim2.new(1 / 3, 0, 1, 0),
+                BackgroundTransparency = 1,
+                ZIndex = 10,
+            }, stats)
+            local icon = lucideIcon(cell, metric[2], 12, Theme.Text, 11)
+            icon.AnchorPoint = Vector2.new(0, 0.5)
+            icon.Position = UDim2.new(0, 5, 0.5, 0)
+            create("TextLabel", {
+                Name = "Count",
+                Position = UDim2.fromOffset(20, 0),
+                Size = UDim2.new(1, -23, 1, 0),
+                BackgroundTransparency = 1,
+                Text = formatCounter(item[metric[1]]),
+                TextColor3 = Theme.Text,
+                FontFace = Theme.Font,
+                TextSize = 11,
+                TextScaled = true,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 11,
+            }, cell)
+            create("UITextSizeConstraint", {MinTextSize = 8, MaxTextSize = 11}, cell.Count)
+        end
+        local heading = detailText(scroll, "DescriptionHeading", "Description", 13, false, 4)
+        heading.ZIndex = 9
+        local description = detailText(scroll, "Description", data.description or "No description provided.", 13, false, 5)
+        description.ZIndex = 9
+    else
+        local status = detailText(scroll, "Loading", "Loading details…", 13, true, 2)
+        status.ZIndex = 9
+    end
+
+    local function resize()
+        local width = math.max(1, math.floor(body.AbsoluteSize.X))
+        local height = math.max(1, math.floor(body.AbsoluteSize.Y))
+        local gap = width >= 450 and 12 or 8
+        local leftWidth = math.max(1, math.floor((width - gap) * 0.42))
+        local rightWidth = math.max(1, width - gap - leftWidth)
+        left.Position = UDim2.fromOffset(0, 0)
+        left.Size = UDim2.fromOffset(leftWidth, height)
+        local imageHeight = math.min(height, math.max(1, math.floor(leftWidth * 9 / 16)))
+        picture.Position = UDim2.fromOffset(0, 0)
+        picture.Size = UDim2.fromOffset(leftWidth, imageHeight)
+        local commentHeight = math.max(0, height - imageHeight - gap)
+        commentsCard.Position = UDim2.fromOffset(0, imageHeight + gap)
+        commentsCard.Size = UDim2.fromOffset(leftWidth, commentHeight)
+        commentsCard.Visible = data ~= nil and commentHeight >= 64
+        card.Position = UDim2.fromOffset(leftWidth + gap, 0)
+        card.Size = UDim2.fromOffset(rightWidth, height)
+    end
+
+    local function updateScroll()
+        local overflow = stack.AbsoluteContentSize.Y > scroll.AbsoluteWindowSize.Y + 1
+        scroll.ScrollingEnabled = overflow
+        scroll.ScrollBarThickness = overflow and 3 or 0
+        if not overflow then
+            scroll.CanvasPosition = Vector2.zero
+        end
+    end
+    local function updateComments()
+        local overflow = commentsLayout.AbsoluteContentSize.Y > comments.AbsoluteWindowSize.Y + 1
+        comments.ScrollingEnabled = overflow
+        comments.ScrollBarThickness = overflow and 3 or 0
+        if not overflow then
+            comments.CanvasPosition = Vector2.zero
+        end
+    end
+    local resizeConnection = body:GetPropertyChangedSignal("AbsoluteSize"):Connect(resize)
+    left.Destroying:Once(function()
+        resizeConnection:Disconnect()
+    end)
+    stack:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateScroll)
+    scroll:GetPropertyChangedSignal("AbsoluteWindowSize"):Connect(updateScroll)
+    commentsLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateComments)
+    comments:GetPropertyChangedSignal("AbsoluteWindowSize"):Connect(updateComments)
+    resize()
+    updateScroll()
+    updateComments()
 end
 
 closeDetails = function()
@@ -1512,18 +1660,13 @@ openDetails = function(item)
     round(back, 8)
     lucideIcon(back, "arrow-left", 18, Theme.Text, 8)
     back.Activated:Connect(closeDetails)
-    local scroller = create("ScrollingFrame", {
+    local scroller = create("Frame", {
         Name = "Details",
         Position = UDim2.fromOffset(0, 44),
         Size = UDim2.new(1, 0, 1, -44),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
-        CanvasSize = UDim2.fromOffset(0, 0),
-        AutomaticCanvasSize = Enum.AutomaticSize.Y,
-        ScrollingDirection = Enum.ScrollingDirection.Y,
-        ScrollBarThickness = 3,
-        ScrollBarImageColor3 = Theme.Divider,
-        VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
+        ClipsDescendants = true,
         ZIndex = 7,
     }, view)
     renderDetails(scroller, item, nil)
@@ -1536,7 +1679,7 @@ openDetails = function(item)
             return
         end
         if not data then
-            local status = scroller:FindFirstChild("Loading")
+            local status = scroller:FindFirstChild("Loading", true)
             if status then
                 status.Text = "Script details could not be loaded."
             end
