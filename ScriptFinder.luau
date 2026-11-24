@@ -129,8 +129,25 @@ if RunService:IsServer() then
     return
 end
 
-local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
+local playersService = game:GetService("Players")
+if not playersService then
+    error("ScriptFinder: Players service unavailable in this runtime", 0)
+end
+
+local player = playersService.LocalPlayer
+local deadline = os.clock() + 15
+while not player and os.clock() < deadline do
+    task.wait()
+    player = playersService.LocalPlayer
+end
+if not player then
+    error("ScriptFinder: LocalPlayer unavailable; run the UI on a connected Roblox client", 0)
+end
+
+local playerGui = player:WaitForChild("PlayerGui", 15)
+if not playerGui then
+    error("ScriptFinder: PlayerGui did not initialize", 0)
+end
 
 local Theme = table.freeze({
     Accent = Color3.fromRGB(44, 103, 197),
