@@ -194,6 +194,76 @@ local function readResponse(url, fresh)
     return decoded
 end
 
+local Filters = {
+    groups = {
+        {key = "sort", title = "Sort by", options = {
+            {"all", "Default"}, {"newest", "Newest"}, {"updated", "Recently updated"},
+            {"views", "Most viewed"}, {"likes", "Most liked"},
+        }},
+        {key = "cost", title = "Type", options = {
+            {"all", "All types"}, {"free", "Free"}, {"paid", "Paid"},
+        }},
+        {key = "verification", title = "Verification", options = {
+            {"all", "Any"}, {"verified", "Verified"}, {"unverified", "Unverified"},
+        }},
+        {key = "scope", title = "Scope", options = {
+            {"all", "Any"}, {"universal", "Universal"}, {"game", "Game-specific"},
+        }},
+    },
+    sorts = {newest = "createdAt", updated = "updatedAt", views = "views", likes = "likeCount"},
+}
+
+function Filters.normalize(value)
+    if value ~= nil and type(value) ~= "table" then return nil end
+    local result = {}
+    for _, group in ipairs(Filters.groups) do
+        local selected = value and value[group.key] or "all"
+        local valid = false
+        for _, option in ipairs(group.options) do
+            if selected == option[1] then
+                valid = true
+                break
+            end
+        end
+        if not valid then return nil end
+        result[group.key] = selected
+    end
+    return result
+end
+
+function Filters.key(value)
+    local parts = {}
+    for _, group in ipairs(Filters.groups) do
+        table.insert(parts, value[group.key])
+    end
+    return table.concat(parts, ":")
+end
+
+function Filters.count(value)
+    local count = 0
+    for _, group in ipairs(Filters.groups) do
+        if value[group.key] ~= "all" then count += 1 end
+    end
+    return count
+end
+
+function Filters.matches(item, value)
+    if value.cost ~= "all" and item.scriptType ~= value.cost then return false end
+    if value.verification ~= "all" and item.verified ~= (value.verification == "verified") then return false end
+    if value.scope ~= "all" and item.isUniversal ~= (value.scope == "universal") then return false end
+    return true
+end
+
+function Filters.metadata(item)
+    return {
+        scriptType = (item.scriptType == "free" or item.scriptType == "paid") and item.scriptType or nil,
+        verified = if type(item.verified) == "boolean" then item.verified else nil,
+        isUniversal = if type(item.isUniversal) == "boolean" then item.isUniversal else nil,
+        createdAt = plainText(item.createdAt, 64),
+        updatedAt = plainText(item.updatedAt, 64),
+    }
+end
+
 local function summaryFor(item)
     local title = plainText(item.title, 180)
     local id = item._id or item.slug
@@ -201,7 +271,13 @@ local function summaryFor(item)
         return nil
     end
     local stats = type(item.stats) == "table" and item.stats or {}
+    local metadata = Filters.metadata(item)
     return {
+        scriptType = metadata.scriptType,
+        verified = metadata.verified,
+        isUniversal = metadata.isUniversal,
+        createdAt = metadata.createdAt,
+        updatedAt = metadata.updatedAt,
         id = id,
         slug = identifier(item.slug) and item.slug or id,
         title = title:gsub("\n", " "),
@@ -218,14 +294,25 @@ local function normalizeSearch(value)
     return query and query:match("^%s*(.-)%s*$") or ""
 end
 
-local function fetchCatalogue(target, placeId, query)
+local function fetchCatalogue(target, placeId, query, filters)
     query = normalizeSearch(query)
+    filters = Filters.normalize(filters)
+    if not filters then error("Invalid filters", 0) end
+    local sort = Filters.sorts[filters.sort] or (query ~= "" and "accuracy" or "createdAt")
     local url
     if query ~= "" then
-        url = string.format("https://scriptblox.com/api/script/search?q=%s&page=%d&max=%d&strict=false&sortBy=accuracy&order=desc",
+        url = string.format("https://scriptblox.com/api/script/search?q=%s&page=%d&max=%d&strict=false",
             HttpService:UrlEncode(query), target, PageSize)
     else
-        url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d&sortBy=createdAt&order=desc", target, PageSize)
+        url = string.format("https://scriptblox.com/api/script/fetch?page=%d&max=%d", target, PageSize)
+    end
+    url ..= "&sortBy=" .. sort .. "&order=desc"
+    if filters.cost ~= "all" then url ..= "&mode=" .. filters.cost end
+    if filters.verification ~= "all" then
+        url ..= "&verified=" .. (filters.verification == "verified" and "1" or "0")
+    end
+    if filters.scope ~= "all" then
+        url ..= "&universal=" .. (filters.scope == "universal" and "1" or "0")
     end
     if placeId ~= nil then
         local id = numericId(placeId)
@@ -398,8 +485,19 @@ if RunService:IsServer() then
         local isCode = type(target) == "table" and target.action == "code"
         local isGame = type(target) == "table" and target.action == "game"
         local isSearch = type(target) == "table" and target.action == "search"
+        local isFiltered = type(target) == "table" and target.action == "filtered"
+        local filters = isFiltered and Filters.normalize(target.filters) or nil
         local isDetail = type(target) == "string"
-        if isSearch then
+        if isFiltered then
+            if not filters or type(target.query) ~= "string" or #target.query > 480
+                or normalizeSearch(target.query) ~= target.query
+                or type(target.page) ~= "number" or target.page < 1
+                or target.page > 1000000 or target.page ~= math.floor(target.page)
+                or type(target.gameOnly) ~= "boolean"
+                or (target.gameOnly and not numericId(game.PlaceId)) then
+                return {error = "Invalid filtered catalogue request"}
+            end
+        elseif isSearch then
             if type(target.query) ~= "string" or #target.query > 480
                 or normalizeSearch(target.query) == "" or normalizeSearch(target.query) ~= target.query
                 or type(target.page) ~= "number" or target.page < 1
@@ -430,15 +528,17 @@ if RunService:IsServer() then
         elseif type(target) ~= "number" or target ~= target or target < 1 or target > 1000000 or target ~= math.floor(target) then
             return {error = "Invalid page"}
         end
-        local key = isSearch and ("search:" .. (target.gameOnly and tostring(game.PlaceId) or "all")
-                .. ":" .. tostring(target.page) .. ":" .. target.query)
+        local key = isFiltered and ("filtered:" .. (target.gameOnly and tostring(game.PlaceId) or "all")
+                .. ":" .. tostring(target.page) .. ":" .. Filters.key(filters) .. ":" .. target.query)
+            or (isSearch and ("search:" .. (target.gameOnly and tostring(game.PlaceId) or "all")
+                .. ":" .. tostring(target.page) .. ":" .. target.query))
             or (isCode and ("code:" .. target.id))
             or (isComments and ("comments:" .. target.id .. ":" .. tostring(target.page)))
             or (isGame and ("game:" .. tostring(game.PlaceId) .. ":" .. tostring(target.page))) or target
         local now = os.clock()
         local activity = recent[player] or {}
         recent[player] = activity
-        local kind = isSearch and "search" or (isCode and "code" or (isComments and "comments" or (isDetail and "detail" or (isGame and "game" or "page"))))
+        local kind = (isSearch or isFiltered) and "search" or (isCode and "code" or (isComments and "comments" or (isDetail and "detail" or (isGame and "game" or "page"))))
         if now - (activity[kind] or -math.huge) < (isCode and 0.6 or (isDetail and 0.25 or 0.5)) then
             return {error = "Please try again"}
         end
@@ -459,7 +559,9 @@ if RunService:IsServer() then
         requests += 1
         pending[key] = true
         local ok, data
-        if isSearch then
+        if isFiltered then
+            ok, data = pcall(fetchCatalogue, target.page, target.gameOnly and game.PlaceId or nil, target.query, filters)
+        elseif isSearch then
             ok, data = pcall(fetchCatalogue, target.page, target.gameOnly and game.PlaceId or nil, target.query)
         elseif isGame then
             ok, data = pcall(fetchCatalogue, target.page, game.PlaceId)
@@ -681,6 +783,9 @@ local Lucide48 = table.freeze({
     ["arrow-left"] = {Image = "rbxassetid://16898612629", Offset = Vector2.new(98, 918)},
     ["arrow-right"] = {Image = "rbxassetid://16898612629", Offset = Vector2.new(453, 820)},
     ["search"] = {Image = "rbxassetid://16898613699", Offset = Vector2.new(918, 857)},
+    ["filter"] = {Image = "rbxassetid://16898613353", Offset = Vector2.new(612, 869)},
+    ["chevron-down"] = {Image = "rbxassetid://16898612819", Offset = Vector2.new(196, 918)},
+    ["check"] = {Image = "rbxassetid://16898612819", Offset = Vector2.new(710, 869)},
     ["star"] = {Image = "rbxassetid://16898613777", Offset = Vector2.new(967, 147)},
     ["gamepad-2"] = {Image = "rbxassetid://16898613353", Offset = Vector2.new(710, 967)},
     ["eye"] = {Image = "rbxassetid://16898613353", Offset = Vector2.new(771, 563)},
@@ -961,6 +1066,10 @@ local totalPages
 local changePage
 local catalogueScope = "all"
 local searchState = {query = "", ticket = 0}
+local filterState = {
+    values = Filters.normalize(), expanded = false, menuOpen = false,
+    ticket = 0, pending = false, layoutTicket = 0, rows = {}, tweens = {}, hidden = {},
+}
 local layoutSearchBar
 
 gui:SetAttribute("Provider", providers[selectedProvider].Name)
@@ -1123,6 +1232,138 @@ end
 local favoriteShortcut, favoriteShortcutButton = shortcut("Favorites", "star")
 local gameShortcut, gameShortcutButton = shortcut("Game", "gamepad-2")
 
+do
+    local button = create("TextButton", {
+        Name = "Filters",
+        Size = UDim2.fromOffset(32, 38),
+        BackgroundColor3 = Theme.Raised,
+        BorderSizePixel = 0,
+        Text = "",
+        AutoButtonColor = false,
+        ClipsDescendants = true,
+        ZIndex = 8,
+    }, shortcuts)
+    round(button, 19)
+    filterState.button = button
+    local icon = lucideIcon(button, "filter", 18, Theme.Text, 9)
+    icon.Position = UDim2.fromOffset(16, 19)
+    filterState.icon = icon
+    filterState.label = create("TextLabel", {
+        Name = "Label",
+        Position = UDim2.fromOffset(32, 0),
+        Size = UDim2.new(1, -62, 1, 0),
+        BackgroundTransparency = 1,
+        Text = "Filters",
+        TextColor3 = Theme.Text,
+        FontFace = Theme.Font,
+        TextSize = 13,
+        TextTransparency = 1,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 9,
+    }, button)
+    filterState.chevron = lucideIcon(button, "chevron-down", 14, Theme.Text, 9)
+    filterState.chevron.Position = UDim2.new(1, -17, 0.5, 0)
+    filterState.chevron.ImageTransparency = 1
+
+    local menu = create("CanvasGroup", {
+        Name = "FilterDropdown",
+        Size = UDim2.fromOffset(216, 0),
+        BackgroundColor3 = Theme.Raised,
+        GroupTransparency = 1,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        Visible = false,
+        ZIndex = 30,
+    }, content)
+    round(menu, 12)
+    filterState.menu = menu
+    local scrolling = create("ScrollingFrame", {
+        Name = "Options",
+        Position = UDim2.fromOffset(7, 7),
+        Size = UDim2.new(1, -14, 1, -14),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.fromOffset(0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = Theme.Divider,
+        VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
+        ZIndex = 31,
+    }, menu)
+    filterState.scrolling = scrolling
+    create("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 3),
+    }, scrolling)
+    local index = 0
+    for _, group in ipairs(Filters.groups) do
+        index += 1
+        create("TextLabel", {
+            Name = group.key,
+            LayoutOrder = index,
+            Size = UDim2.new(1, -4, 0, 23),
+            BackgroundTransparency = 1,
+            Text = "  " .. group.title,
+            TextColor3 = Theme.Text:Lerp(Theme.Raised, 0.35),
+            FontFace = Theme.Font,
+            TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            ZIndex = 32,
+        }, scrolling)
+        for _, option in ipairs(group.options) do
+            index += 1
+            local row = create("TextButton", {
+                Name = group.key .. "_" .. option[1],
+                LayoutOrder = index,
+                Size = UDim2.new(1, -4, 0, 27),
+                BackgroundColor3 = Theme.Window,
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                AutoButtonColor = false,
+                Text = "  " .. option[2],
+                TextColor3 = Theme.Text,
+                FontFace = Theme.Font,
+                TextSize = 12,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                ZIndex = 32,
+            }, scrolling)
+            round(row, 6)
+            local check = lucideIcon(row, "check", 14, Theme.Accent, 33)
+            check.Position = UDim2.new(1, -16, 0.5, 0)
+            table.insert(filterState.rows, {button = row, check = check, key = group.key, value = option[1]})
+            row.Activated:Connect(function()
+                if filterState.select then filterState.select(group.key, option[1]) end
+            end)
+        end
+    end
+    function filterState.updateRows()
+        local count = Filters.count(filterState.values)
+        filterState.label.Text = count > 0 and ("Filters · " .. count) or "Filters"
+        filterState.icon.ImageColor3 = count > 0 and Theme.Accent or Theme.Text
+        filterState.chevron.Rotation = filterState.menuOpen and 180 or 0
+        for _, row in ipairs(filterState.rows) do
+            local selected = filterState.values[row.key] == row.value
+            row.button.BackgroundTransparency = selected and 0 or 1
+            row.check.Visible = selected
+        end
+    end
+    function filterState.motion(object, properties, animated)
+        local tween = filterState.tweens[object]
+        if tween then tween:Cancel() end
+        if animated then
+            tween = TweenService:Create(object, TweenInfo.new(0.26, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), properties)
+            filterState.tweens[object] = tween
+            tween:Play()
+        else
+            filterState.tweens[object] = nil
+            for key, value in pairs(properties) do object[key] = value end
+        end
+    end
+    filterState.updateRows()
+end
+
 local scopeBack = create("TextButton", {
     Name = "CatalogueBack",
     Position = UDim2.fromOffset(14, 15),
@@ -1145,13 +1386,16 @@ local function updateShortcuts()
         local selected = selectedProvider == 3 and catalogueScope == scope
         local color = selected and Theme.Accent or Theme.Text
         button:SetAttribute("Selected", selected)
-        button.Active = selectedProvider == 3
+        button.Active = selectedProvider == 3 and not filterState.hidden[button]
         local icon = button:FindFirstChild("Icon")
         if icon then
             icon.ImageColor3 = color
         end
-        button.BackgroundTransparency = selected and 0 or 1
+        if not filterState.hidden[button] then
+            button.BackgroundTransparency = selected and 0 or 1
+        end
     end
+    filterState.button.Active = selectedProvider == 3
 end
 
 local results = create("Frame", {
@@ -1222,7 +1466,13 @@ function favorites.clean(item)
     end
     local title = plainText(item.title, 180)
     if not title then return nil end
+    local metadata = Filters.metadata(item)
     return {
+        scriptType = metadata.scriptType,
+        verified = metadata.verified,
+        isUniversal = metadata.isUniversal,
+        createdAt = metadata.createdAt,
+        updatedAt = metadata.updatedAt,
         id = item.id,
         slug = item.slug,
         title = title,
@@ -1293,18 +1543,26 @@ function favorites.toggle(item)
     gui:SetAttribute("FavoriteCount", #favorites.order)
 end
 
-function favorites.page(target, query)
-    local order = favorites.order
+function favorites.page(target, query, filters)
+    local order = {}
     query = normalizeSearch(query):lower()
-    if query ~= "" then
-        order = {}
-        for _, id in ipairs(favorites.order) do
-            local saved = favorites.entries[id]
-            if saved and (saved.title:lower():find(query, 1, true)
-                or saved.slug:lower():find(query, 1, true)) then
-                table.insert(order, id)
-            end
+    filters = Filters.normalize(filters) or Filters.normalize()
+    for _, id in ipairs(favorites.order) do
+        local saved = favorites.entries[id]
+        if saved and Filters.matches(saved, filters) and (query == ""
+            or saved.title:lower():find(query, 1, true) or saved.slug:lower():find(query, 1, true)) then
+            table.insert(order, id)
         end
+    end
+    if filters.sort ~= "all" then
+        local field = filters.sort == "newest" and "createdAt" or (filters.sort == "updated" and "updatedAt" or filters.sort)
+        table.sort(order, function(a, b)
+            local left, right = favorites.entries[a][field], favorites.entries[b][field]
+            if left == right then return a < b end
+            if left == nil then return false end
+            if right == nil then return true end
+            return left > right
+        end)
     end
     local pages = math.max(1, math.ceil(#order / PageSize))
     local items = {}
@@ -1343,7 +1601,7 @@ end
 local function updatePagination()
     updateShortcuts()
     local enabled = selectedProvider == 3 and not detailView
-    scopeBack.Visible = enabled and (catalogueScope ~= "all" or searchState.query ~= "")
+    scopeBack.Visible = enabled and (catalogueScope ~= "all" or searchState.query ~= "" or Filters.count(filterState.values) > 0)
     navigation.Visible = not detailView
     selector.Visible = not detailView
     if detailView then
@@ -1848,6 +2106,9 @@ local function requestData(target)
     if type(target) == "table" and target.action == "code" then
         return fetchCode(target.id)
     end
+    if type(target) == "table" and target.action == "filtered" then
+        return fetchCatalogue(target.page, target.gameOnly and game.PlaceId or nil, target.query, target.filters)
+    end
     if type(target) == "table" and target.action == "search" then
         return fetchCatalogue(target.page, target.gameOnly and game.PlaceId or nil, target.query)
     end
@@ -1910,10 +2171,26 @@ local function mergeMetadata(item, data, missingOnly)
     if data.thumbnailSource then
         item.thumbnailSource = data.thumbnailSource
     end
+    for _, key in ipairs({"scriptType", "verified", "isUniversal", "createdAt", "updatedAt"}) do
+        if data[key] ~= nil then item[key] = data[key] end
+    end
 end
 
 local function updateCard(item, data, missingOnly)
     mergeMetadata(item, data, missingOnly)
+    if data and favorites.entries[item.id] then
+        local saved = favorites.clean(item)
+        if saved then
+            favorites.entries[item.id] = saved
+            if not favorites.metadataSavePending then
+                favorites.metadataSavePending = true
+                task.delay(0.6, function()
+                    favorites.metadataSavePending = false
+                    if alive then favorites.save() end
+                end)
+            end
+        end
+    end
     local view = activeCards[item.id]
     if not view or view.item ~= item then
         return
@@ -2458,8 +2735,9 @@ closeDetails = function()
     detailView = nil
     view:Destroy()
     searchPill.Visible = searchPill.Size.X.Offset >= 64
-    shortcuts.Visible = searchPill.Visible
+    shortcuts.Visible = true
     updatePagination()
+    if layoutSearchBar then layoutSearchBar() end
     if activePageView then
         activePageView.Position = UDim2.fromOffset(-18, 0)
         local tween = TweenService:Create(activePageView, TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.fromOffset(0, 0)})
@@ -2488,6 +2766,7 @@ openDetails = function(item)
         ZIndex = 6,
     }, content)
     detailView = view
+    if filterState.close then filterState.close(false) end
     local back = create("TextButton", {
         Name = "Back",
         Position = UDim2.fromOffset(0, 0),
@@ -2576,6 +2855,8 @@ local function loadCatalogue(target, direction)
     local token = generation
     local scope = catalogueScope
     local query = searchState.query
+    local filters = table.clone(filterState.values)
+    local filterKey = Filters.key(filters)
     loading = true
     retryPage = nil
     feedback.Visible = not activePageView
@@ -2586,7 +2867,10 @@ local function loadCatalogue(target, direction)
         lastCatalogueRequest = os.clock()
         local ok, data
         if scope == "favorites" then
-            ok, data = pcall(favorites.page, target, query)
+            ok, data = pcall(favorites.page, target, query, filters)
+        elseif Filters.count(filters) > 0 then
+            ok, data = pcall(requestData, {action = "filtered", page = target, query = query,
+                gameOnly = scope == "game", filters = filters})
         elseif query ~= "" then
             ok, data = pcall(requestData, {action = "search", page = target, query = query, gameOnly = scope == "game"})
         elseif scope == "game" then
@@ -2595,7 +2879,8 @@ local function loadCatalogue(target, direction)
             ok, data = pcall(requestData, target)
         end
         if not alive or token ~= generation or selectedProvider ~= 3
-            or scope ~= catalogueScope or query ~= searchState.query then
+            or scope ~= catalogueScope or query ~= searchState.query
+            or filterKey ~= Filters.key(filterState.values) then
             return
         end
         loading = false
@@ -2635,7 +2920,7 @@ end
 requestFreshCatalogue = function(interval)
     if not alive or selectedProvider ~= 3 or loading or detailView
         or not content.Visible or not results.Visible
-        or normalizeSearch(searchInput.Text) ~= searchState.query then
+        or filterState.pending or normalizeSearch(searchInput.Text) ~= searchState.query then
         return
     end
     if not activePageView and not retryPage then
@@ -2670,13 +2955,17 @@ local function switchCatalogue(scope, preserveSearch)
         closeDetails()
     end
     catalogueScope = scope or "all"
+    filterState.ticket += 1
+    filterState.pending = false
     if not preserveSearch then
+        if filterState.close then filterState.close(false) end
         searchState.ticket += 1
         searchState.query = ""
         searchInput.Text = ""
     end
     gui:SetAttribute("CatalogueScope", catalogueScope)
     gui:SetAttribute("SearchQuery", searchState.query)
+    gui:SetAttribute("Filters", Filters.key(filterState.values))
     generation += 1
     loading, hasLoaded, retryPage = false, false, nil
     clearPageMotion()
@@ -2725,6 +3014,8 @@ end)
 bind(scopeBack.Activated, function()
     if selectedProvider == 3 and not detailView then
         searchInput:ReleaseFocus()
+        filterState.values = Filters.normalize()
+        filterState.updateRows()
         switchCatalogue("all")
     end
 end)
@@ -2741,36 +3032,161 @@ bind(gameShortcutButton.Activated, function()
     end
 end)
 
-layoutSearchBar = function()
+layoutSearchBar = function(animate)
+    animate = animate == true
     local width = content.AbsoluteSize.X
-    local stacked = width < 470
-    local hasBack = selectedProvider == 3 and (catalogueScope ~= "all" or searchState.query ~= "")
+    local hasBack = selectedProvider == 3 and (catalogueScope ~= "all" or searchState.query ~= "" or Filters.count(filterState.values) > 0)
     local inset = hasBack and 40 or 0
+    local stacked = width < 520 + inset
     local available = math.max(0, width - (stacked and 28 or 286) - inset)
-    local shortcutsWidth = 70
+    local expanded = filterState.expanded and selectedProvider == 3 and not detailView
+    local filterWidth = expanded and math.clamp(available - 64 - 8, 94, 144) or 32
+    local minSearch = available >= 250 and 108 or 64
+    local visibleIcons = 2
+    if expanded then
+        if available < minSearch + 8 + filterWidth + 76 then visibleIcons = 1 end
+        if available < minSearch + 8 + filterWidth + 38 then visibleIcons = 0 end
+    end
+    local shortcutsWidth = visibleIcons * 38 + filterWidth
     local searchWidth = math.max(0, math.min(280, available - 8 - shortcutsWidth))
     scopeBack.Visible = hasBack and not detailView
-    searchPill.Position = UDim2.fromOffset(14 + inset, 12)
-    searchPill.Size = UDim2.fromOffset(searchWidth, 38)
-    searchPill.Visible = searchWidth >= 64
-    shortcuts.Position = UDim2.fromOffset(14 + inset + searchWidth + 8, 12)
-    shortcuts.Size = UDim2.fromOffset(shortcutsWidth, 38)
-    shortcuts.Visible = searchWidth >= 64
-    local favoriteWidth = favoriteShortcut(0)
-    gameShortcut(favoriteWidth + 6)
+    searchPill.Visible = searchWidth >= 64 and not detailView
+    shortcuts.Visible = not detailView
+    filterState.motion(searchPill, {Position = UDim2.fromOffset(14 + inset, 12), Size = UDim2.fromOffset(searchWidth, 38)}, animate)
+    filterState.motion(shortcuts, {Position = UDim2.fromOffset(14 + inset + searchWidth + 8, 12), Size = UDim2.fromOffset(shortcutsWidth, 38)}, animate)
+    filterState.layoutTicket += 1
+    local ticket = filterState.layoutTicket
+    for index, button in ipairs({favoriteShortcutButton, gameShortcutButton}) do
+        local shown = visibleIcons == 2 or (visibleIcons == 1 and index == 2)
+        filterState.hidden[button] = not shown
+        button.Active = shown and selectedProvider == 3
+        if shown then button.Visible = true end
+        local icon = button:FindFirstChild("Icon")
+        local hoverTween = hoverTweens[button]
+        if hoverTween then hoverTween:Cancel() end
+        local x = index == 2 and math.max(0, (visibleIcons - 1) * 38) or 0
+        filterState.motion(button, {
+            Position = UDim2.fromOffset(x, 0),
+            BackgroundTransparency = shown and button:GetAttribute("Selected") and 0 or 1,
+        }, animate)
+        if icon then filterState.motion(icon, {ImageTransparency = shown and 0 or 1}, animate) end
+        if not shown then
+            if animate then
+                task.delay(0.27, function()
+                    if alive and ticket == filterState.layoutTicket and filterState.hidden[button] then
+                        button.Visible = false
+                    end
+                end)
+            else
+                button.Visible = false
+            end
+        end
+    end
+    filterState.motion(filterState.button, {
+        Position = UDim2.fromOffset(visibleIcons * 38, 0),
+        Size = UDim2.fromOffset(filterWidth, 38),
+    }, animate)
+    filterState.motion(filterState.label, {TextTransparency = expanded and 0 or 1}, animate)
+    filterState.motion(filterState.chevron, {ImageTransparency = expanded and 0 or 1}, animate)
+
     local row = stacked and 60 or 12
     selector.Position = UDim2.new(1, -14, 0, row)
     navigation.Position = UDim2.new(1, -148, 0, row)
     local top = row + 50
     results.Position = UDim2.fromOffset(14, top)
     results.Size = UDim2.new(1, -28, 1, -top - 26)
+    local menuWidth = math.min(216, math.max(1, width - 28))
+    local menuX = math.clamp(14 + inset + searchWidth + 8 + shortcutsWidth - menuWidth, 14, math.max(14, width - menuWidth - 14))
+    local menuHeight = math.max(0, math.min(358, content.AbsoluteSize.Y - 70))
+    local menuOpen = expanded and filterState.menuOpen and menuHeight >= 60 and content.Visible
+    local menu = filterState.menu
+    if menuOpen then menu.Visible = true end
+    filterState.motion(menu, {
+        Position = UDim2.fromOffset(menuX, 56),
+        Size = UDim2.fromOffset(menuWidth, menuOpen and menuHeight or 0),
+        GroupTransparency = menuOpen and 0 or 1,
+    }, animate)
+    if not menuOpen then
+        if animate then
+            task.delay(0.27, function()
+                if alive and ticket == filterState.layoutTicket and not (filterState.expanded and filterState.menuOpen) then
+                    menu.Visible = false
+                end
+            end)
+        else
+            menu.Visible = false
+        end
+    end
     if detailView then
         searchPill.Visible = false
         shortcuts.Visible = false
         navigation.Visible = false
         selector.Visible = false
+        menu.Visible = false
     end
 end
+
+function filterState.close(animate)
+    if not filterState.expanded and not filterState.menuOpen then return end
+    filterState.expanded = false
+    filterState.menuOpen = false
+    filterState.updateRows()
+    layoutSearchBar(animate)
+end
+
+function filterState.select(key, value)
+    if not alive or detailView or selectedProvider ~= 3 or not filterState.menuOpen then return end
+    if filterState.values[key] == value then return end
+    filterState.values[key] = value
+    filterState.updateRows()
+    filterState.ticket += 1
+    filterState.pending = true
+    local ticket = filterState.ticket
+    local scope = catalogueScope
+    layoutSearchBar(true)
+    task.delay(0.6, function()
+        if alive and ticket == filterState.ticket and selectedProvider == 3 and catalogueScope == scope then
+            filterState.pending = false
+            if not detailView then switchCatalogue(scope, true) end
+        end
+    end)
+end
+
+bind(filterState.button.Activated, function()
+    if selectedProvider ~= 3 or detailView then return end
+    if not filterState.expanded then
+        filterState.expanded = true
+    else
+        filterState.menuOpen = not filterState.menuOpen
+        if filterState.menuOpen then filterState.scrolling.CanvasPosition = Vector2.zero end
+    end
+    filterState.updateRows()
+    layoutSearchBar(true)
+end)
+
+bind(UserInputService.InputBegan, function(input)
+    if not filterState.expanded then return end
+    if input.KeyCode == Enum.KeyCode.Escape then
+        filterState.close(true)
+        return
+    end
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local position = input.Position
+    local function contains(object)
+        if not object.Visible then return false end
+        local p, size = object.AbsolutePosition, object.AbsoluteSize
+        return position.X >= p.X and position.X <= p.X + size.X
+            and position.Y >= p.Y and position.Y <= p.Y + size.Y
+    end
+    if not contains(filterState.button) and not contains(filterState.menu) then
+        filterState.close(true)
+    end
+end)
+
+bind(content:GetPropertyChangedSignal("Visible"), function()
+    if not content.Visible then filterState.close(false) end
+end)
 
 bind(content:GetPropertyChangedSignal("AbsoluteSize"), layoutSearchBar)
 layoutSearchBar()
@@ -3249,7 +3665,7 @@ bind(UserInputService.WindowFocused, function()
 end)
 
 bind(UserInputService.InputBegan, function(input)
-    if not alive or not results.Visible or detailView
+    if not alive or not results.Visible or detailView or filterState.expanded
         or (input.UserInputType ~= Enum.UserInputType.MouseButton1
             and input.UserInputType ~= Enum.UserInputType.Touch) then
         return
