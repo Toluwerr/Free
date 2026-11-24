@@ -71,8 +71,12 @@ local function thumbnailFor(entry)
         return oldImage
     end
     local id = numericId(info.placeId or entry.placeId or info.gameId)
-    if id then
+    if id and entry.isUniversal ~= true then
         return "rbxthumb://type=GameThumbnail&id=" .. id .. "&w=384&h=216"
+    end
+    local universe = numericId(info.universeId or entry.universeId)
+    if universe and entry.isUniversal ~= true then
+        return "rbxthumb://type=GameIcon&id=" .. universe .. "&w=150&h=150"
     end
     return image ~= "" and image or oldImage
 end
@@ -188,9 +192,12 @@ local function fetchDetails(slug)
     info.author = plainText(owner.username, 100)
     info.avatar = imageAsset(owner.profilePicture)
     if info.avatar == "" then
+        info.avatar = imageAsset(owner.profilePictureAssetId or owner.avatarAssetId)
+    end
+    if info.avatar == "" then
         info.avatar = imageAsset(owner.avatarUrl or owner.avatar)
     end
-    local userId = numericId(owner.robloxUserId)
+    local userId = numericId(owner.robloxUserId or owner.robloxId)
     if info.avatar == "" and userId then
         info.avatar = "rbxthumb://type=AvatarHeadShot&id=" .. userId .. "&w=150&h=150"
     end
@@ -1030,6 +1037,56 @@ local function formatCounter(n)
     return tostring(n)
 end
 
+local function makeMetrics(parent, item, layer)
+    local pill = create("Frame", {
+        Name = "Metrics",
+        LayoutOrder = 3,
+        Size = UDim2.fromOffset(0, 22),
+        AutomaticSize = Enum.AutomaticSize.X,
+        BackgroundColor3 = Theme.Window,
+        BackgroundTransparency = 0.12,
+        BorderSizePixel = 0,
+        ZIndex = layer,
+    }, parent)
+    round(pill, 11)
+    create("UIPadding", {PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6)}, pill)
+    create("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        VerticalAlignment = Enum.VerticalAlignment.Center,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 6),
+    }, pill)
+    local counters = {}
+    for i, metric in ipairs({{"views", "eye"}, {"executions", "play"}, {"likes", "thumbs-up"}}) do
+        local cell = create("Frame", {
+            Name = metric[1],
+            Size = UDim2.fromOffset(0, 22),
+            AutomaticSize = Enum.AutomaticSize.X,
+            BackgroundTransparency = 1,
+            LayoutOrder = i,
+            ZIndex = layer + 1,
+        }, pill)
+        local icon = lucideIcon(cell, metric[2], 12, Theme.Text, layer + 2)
+        icon.AnchorPoint = Vector2.new(0, 0.5)
+        icon.Position = UDim2.new(0, 0, 0.5, 0)
+        local label = create("TextLabel", {
+            Name = "Count",
+            Position = UDim2.fromOffset(15, 0),
+            Size = UDim2.fromOffset(0, 22),
+            AutomaticSize = Enum.AutomaticSize.X,
+            BackgroundTransparency = 1,
+            TextColor3 = Theme.Text,
+            FontFace = Theme.Font,
+            TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Text = formatCounter(item[metric[1]]),
+            ZIndex = layer + 2,
+        }, cell)
+        counters[metric[1]] = label
+    end
+    return pill, counters
+end
+
 local function makeCard(scroller, item, index)
     local card = create("Frame", {
         Name = "ScriptCard",
@@ -1050,53 +1107,9 @@ local function makeCard(scroller, item, index)
         ZIndex = 4,
     }, card)
     round(image, 8)
-    local pill = create("Frame", {
-        Name = "Metrics",
-        AnchorPoint = Vector2.new(0, 1),
-        Position = UDim2.new(0, 6, 1, -6),
-        Size = UDim2.fromOffset(0, 22),
-        AutomaticSize = Enum.AutomaticSize.X,
-        BackgroundColor3 = Theme.Window,
-        BackgroundTransparency = 0.12,
-        BorderSizePixel = 0,
-        ZIndex = 5,
-    }, image)
-    round(pill, 11)
-    create("UIPadding", {PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6)}, pill)
-    create("UIListLayout", {
-        FillDirection = Enum.FillDirection.Horizontal,
-        VerticalAlignment = Enum.VerticalAlignment.Center,
-        SortOrder = Enum.SortOrder.LayoutOrder,
-        Padding = UDim.new(0, 6),
-    }, pill)
-    local counters = {}
-    for i, metric in ipairs({{"views", "eye"}, {"executions", "play"}, {"likes", "thumbs-up"}}) do
-        local cell = create("Frame", {
-            Name = metric[1],
-            Size = UDim2.fromOffset(0, 22),
-            AutomaticSize = Enum.AutomaticSize.X,
-            BackgroundTransparency = 1,
-            LayoutOrder = i,
-            ZIndex = 6,
-        }, pill)
-        local icon = lucideIcon(cell, metric[2], 12, Theme.Text, 7)
-        icon.AnchorPoint = Vector2.new(0, 0.5)
-        icon.Position = UDim2.new(0, 0, 0.5, 0)
-        local label = create("TextLabel", {
-            Name = "Count",
-            Position = UDim2.fromOffset(15, 0),
-            Size = UDim2.fromOffset(0, 22),
-            AutomaticSize = Enum.AutomaticSize.X,
-            BackgroundTransparency = 1,
-            TextColor3 = Theme.Text,
-            FontFace = Theme.Font,
-            TextSize = 11,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            Text = formatCounter(item[metric[1]]),
-            ZIndex = 7,
-        }, cell)
-        counters[metric[1]] = label
-    end
+    local pill, counters = makeMetrics(image, item, 5)
+    pill.AnchorPoint = Vector2.new(0, 1)
+    pill.Position = UDim2.new(0, 6, 1, -6)
     local title = create("TextLabel", {
         Name = "Title",
         Position = UDim2.new(0, 10, 1, -44),
@@ -1458,7 +1471,7 @@ local function renderDetails(body, item, data)
         VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
         ZIndex = 8,
     }, card)
-    local stack = create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 10)}, scroll)
+    local stack = create("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 7)}, scroll)
     local title = detailText(scroll, "Title", data and data.title or item.title, 17, false, 1)
     title.ZIndex = 9
 
@@ -1466,17 +1479,20 @@ local function renderDetails(body, item, data)
         local author = create("Frame", {
             Name = "Author",
             LayoutOrder = 2,
-            Size = UDim2.new(1, 0, 0, 42),
+            Size = UDim2.new(1, 0, 0, 36),
             BackgroundTransparency = 1,
             BorderSizePixel = 0,
             ZIndex = 9,
         }, scroll)
         local hasAvatar = data.avatar and data.avatar ~= ""
+        if not hasAvatar then
+            author.Size = UDim2.new(1, 0, 0, 20)
+        end
         if hasAvatar then
             local avatar = create("ImageLabel", {
                 Name = "Avatar",
                 Size = UDim2.fromOffset(36, 36),
-                Position = UDim2.fromOffset(0, 3),
+                Position = UDim2.fromOffset(0, 0),
                 BackgroundColor3 = Theme.Window,
                 BorderSizePixel = 0,
                 Image = data.avatar,
@@ -1515,41 +1531,14 @@ local function renderDetails(body, item, data)
         meta.TextWrapped = false
         meta.TextTruncate = Enum.TextTruncate.AtEnd
         meta.ZIndex = 10
-
-        local stats = create("Frame", {
-            Name = "Statistics",
-            LayoutOrder = 3,
-            Size = UDim2.new(1, 0, 0, 30),
-            BackgroundColor3 = Theme.Window,
-            BorderSizePixel = 0,
-            ZIndex = 9,
-        }, scroll)
-        round(stats, 6)
-        for i, metric in ipairs({{"views", "eye"}, {"executions", "play"}, {"likes", "thumbs-up"}}) do
-            local cell = create("Frame", {
-                Position = UDim2.fromScale((i - 1) / 3, 0),
-                Size = UDim2.new(1 / 3, 0, 1, 0),
-                BackgroundTransparency = 1,
-                ZIndex = 10,
-            }, stats)
-            local icon = lucideIcon(cell, metric[2], 12, Theme.Text, 11)
-            icon.AnchorPoint = Vector2.new(0, 0.5)
-            icon.Position = UDim2.new(0, 5, 0.5, 0)
-            create("TextLabel", {
-                Name = "Count",
-                Position = UDim2.fromOffset(20, 0),
-                Size = UDim2.new(1, -23, 1, 0),
-                BackgroundTransparency = 1,
-                Text = formatCounter(item[metric[1]]),
-                TextColor3 = Theme.Text,
-                FontFace = Theme.Font,
-                TextSize = 11,
-                TextScaled = true,
-                TextXAlignment = Enum.TextXAlignment.Left,
-                ZIndex = 11,
-            }, cell)
-            create("UITextSizeConstraint", {MinTextSize = 8, MaxTextSize = 11}, cell.Count)
+        if #parts > 0 and not hasAvatar then
+            author.Size = UDim2.new(1, 0, 0, 38)
         end
+        meta.Visible = #parts > 0
+
+        local stats = makeMetrics(scroll, item, 9)
+        stats.Name = "Statistics"
+        stats.BackgroundTransparency = 0.12
         local heading = detailText(scroll, "DescriptionHeading", "Description", 13, false, 4)
         heading.ZIndex = 9
         local description = detailText(scroll, "Description", data.description or "No description provided.", 13, false, 5)
@@ -1567,11 +1556,12 @@ local function renderDetails(body, item, data)
         local rightWidth = math.max(1, width - gap - leftWidth)
         left.Position = UDim2.fromOffset(0, 0)
         left.Size = UDim2.fromOffset(leftWidth, height)
-        local imageHeight = math.min(height, math.max(1, math.floor(leftWidth * 9 / 16)))
-        picture.Position = UDim2.fromOffset(0, 0)
-        picture.Size = UDim2.fromOffset(leftWidth, imageHeight)
-        local commentHeight = math.max(0, height - imageHeight - gap)
-        commentsCard.Position = UDim2.fromOffset(0, imageHeight + gap)
+        local imageWidth = math.max(1, math.min(leftWidth - 2, math.floor(math.max(1, height - 2) * 16 / 9)))
+        local imageHeight = math.max(1, math.floor(imageWidth * 9 / 16))
+        picture.Position = UDim2.fromOffset(math.floor((leftWidth - imageWidth) / 2), 1)
+        picture.Size = UDim2.fromOffset(imageWidth, imageHeight)
+        local commentHeight = math.max(0, height - imageHeight - gap - 2)
+        commentsCard.Position = UDim2.fromOffset(0, imageHeight + gap + 2)
         commentsCard.Size = UDim2.fromOffset(leftWidth, commentHeight)
         commentsCard.Visible = data ~= nil and commentHeight >= 64
         card.Position = UDim2.fromOffset(leftWidth + gap, 0)
