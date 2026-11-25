@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#181818">
+<title>Roblox User ID Lookup</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,"Segoe UI",Arial,sans-serif;background:#101010;color:#f5f5f5;--accent:#2c67c5;--bg:#181818;--surface:#242424;--hover:#2d2d2d;--line:#383838;--muted:#9c9c9c;--text:#f5f5f5}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:30px 18px;background:#101010}
+button,input{font:inherit}
+button{cursor:pointer}
+button:disabled{opacity:.55;cursor:not-allowed}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.icon{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.app{background:var(--bg);width:min(650px,100%);border-radius:10px;overflow:hidden;box-shadow:0 22px 90px #0008}
+.header{height:55px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding:0 20px;gap:15px}
+.header-title{font-size:13px;font-weight:700}
+.header-meta{font-size:11px;color:var(--muted)}
+.main{padding:27px 24px 23px}
+h1{font-size:22px;font-weight:740;letter-spacing:-.6px;margin:0 0 8px}
+.intro{font-size:12px;line-height:1.7;color:var(--muted);margin:0 0 23px}
+.search-label{display:block;color:#d6d6d6;font-size:11px;font-weight:600;margin-bottom:9px}
+.search-row{display:flex;gap:9px}
+.search-wrap{flex:1;display:flex;align-items:center;gap:9px;background:var(--surface);border:1px solid transparent;border-radius:8px;padding:0 12px;min-width:0;height:43px;transition:border .15s}
+.search-wrap:focus-within{border-color:var(--accent)}
+.search-wrap svg{color:#aaa}
+.search-wrap input{border:0;background:none;outline:none;color:#fff;min-width:0;width:100%;font-size:13px}
+.search-wrap input::placeholder{color:#858585}
+.search-button{display:flex;align-items:center;gap:8px;justify-content:center;border:0;border-radius:8px;background:var(--accent);color:#fff;font-size:12px;font-weight:650;padding:0 18px;min-width:103px}
+.search-button:hover{background:#3a75d3}
+.search-button:disabled{background:#304569}
+.search-button svg{width:16px;height:16px}
+.status{font-size:11px;color:var(--muted);min-height:19px;margin:13px 0 0}
+.status.error{color:#e59b9b}
+.rule{height:1px;background:var(--line);margin:19px 0 17px}
+.result-heading{font-size:11px;font-weight:650;color:#d5d5d5;margin:0 0 10px}
+.empty{min-height:84px;display:flex;align-items:center;gap:11px;color:#8c8c8c;font-size:12px;line-height:1.55}
+.empty svg{width:20px;height:20px;color:#696969}
+.result-list{display:flex;flex-direction:column;gap:8px}
+.result-card{display:flex;align-items:center;gap:12px;border-radius:8px;background:var(--surface);padding:12px 13px;min-width:0}
+.result-card.exact{background:#233249}
+.avatar{width:39px;height:39px;border-radius:8px;background:#30415e;color:#b3d0fc;display:grid;place-items:center;font-weight:750;font-size:13px;flex:none}
+.user-meta{min-width:0;flex:1}
+.username{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.display{color:#aaa;font-size:11px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.user-id{color:#b1b1b1;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;margin-top:6px;overflow-wrap:anywhere}
+.card-actions{display:flex;gap:4px;align-items:center;flex:none}
+.icon-button{width:32px;height:32px;display:grid;place-items:center;background:transparent;border:0;border-radius:7px;color:#ddd}
+.icon-button:hover{background:#3a3a3a}
+.card-actions a{color:#ddd;text-decoration:none}
+.card-actions .icon{width:16px;height:16px}
+.exact-label{display:inline-block;font-size:10px;color:#a9caff;margin:0 0 10px;font-weight:650}
+.suggestion-head{font-size:11px;color:var(--muted);margin:14px 0 9px}
+.note{font-size:10px;line-height:1.7;color:#858585;margin:17px 0 0}
+.footer{padding:11px 24px 13px;border-top:1px solid var(--line);font-size:10px;color:#757575;display:flex;justify-content:space-between;gap:9px}
+.footer a{color:#a5c7fa;text-decoration:none}
+.footer a:hover{text-decoration:underline}
+@media(max-width:530px){body{align-items:flex-start;padding:0;background:#181818}.app{min-height:100dvh;border-radius:0;box-shadow:none}.main{padding:24px 17px}.header{padding:0 17px}.footer{padding:12px 17px}.search-button{min-width:44px;padding:0 13px}.search-button span{display:none}.result-card{gap:9px;padding:11px}.card-actions{gap:1px}.avatar{height:34px;width:34px}.intro{margin-bottom:20px}h1{font-size:20px}}
+</style>
+</head>
+<body>
+<svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+  <symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></symbol>
+  <symbol id="copy" viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
+  <symbol id="check" viewBox="0 0 24 24"><path d="m20 6-11 11-5-5"/></symbol>
+  <symbol id="external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3"/><path d="M21 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h6"/></symbol>
+  <symbol id="user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></symbol>
+</svg>
+<main class="app">
+  <header class="header"><span class="header-title">Username Lookup</span><span class="header-meta">Roblox · User IDs</span></header>
+  <section class="main">
+    <h1>Find a Roblox User ID</h1>
+    <p class="intro">Search by a Roblox username to find the matching user ID. You can copy it directly into the chat login.</p>
+    <form id="lookupForm" autocomplete="off">
+      <label class="search-label" for="username">Roblox username</label>
+      <div class="search-row">
+        <div class="search-wrap"><svg class="icon"><use href="#search"/></svg><input id="username" name="username" placeholder="Enter a username" maxlength="20" spellcheck="false" autocapitalize="none" autocomplete="off" required></div>
+        <button class="search-button" id="submit" type="submit"><svg class="icon"><use href="#search"/></svg><span>Search</span></button>
+      </div>
+    </form>
+    <div id="status" class="status" role="status" aria-live="polite">Enter an exact username, not a display name.</div>
+    <div class="rule"></div>
+    <div id="resultHeading" class="result-heading">Results</div>
+    <div id="empty" class="empty"><svg class="icon"><use href="#user"/></svg><span>Search for a username to see the corresponding Roblox account.</span></div>
+    <div id="results" class="result-list" hidden></div>
+    <p class="note">Uses public Roblox account data through a third-party API proxy. No Roblox password, cookie, or login is needed.</p>
+  </section>
+  <footer class="footer"><span>Look up usernames, copy IDs, open profiles</span><a href="./index.html">Back to Chat</a></footer>
+</main>
+<script>
+"use strict";
+(() => {
+  const form = document.getElementById("lookupForm");
+  const input = document.getElementById("username");
+  const submit = document.getElementById("submit");
+  const status = document.getElementById("status");
+  const resultHeading = document.getElementById("resultHeading");
+  const results = document.getElementById("results");
+  const empty = document.getElementById("empty");
+  let latestRequest = 0;
+  let controller = null;
+
+  function svg(name) {
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    icon.setAttribute("class", "icon");
+    const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    use.setAttribute("href", "#" + name);
+    icon.appendChild(use);
+    return icon;
+  }
+
+  function setStatus(message, error) {
+    status.textContent = message;
+    status.classList.toggle("error", Boolean(error));
+  }
+
+  async function requestJSON(url, signal) {
+    const res = await fetch(url, { signal, cache: "no-store" });
+    if (!res.ok) throw new Error("Server returned HTTP " + res.status);
+    const data = await res.json();
+    if (!data || !Array.isArray(data.data)) throw new Error("Unexpected API response");
+    return data.data;
+  }
+
+  async function lookup(username, signal) {
+    const path = "/v1/users/search?keyword=" + encodeURIComponent(username) + "&limit=25";
+    const sources = [
+      "https://users.roproxy.com" + path,
+      "https://proxy.cors.dev/https://users.roblox.com" + path
+    ];
+    let lastError;
+    for (const source of sources) {
+      try {
+        return await requestJSON(source, signal);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        lastError = error;
+      }
+    }
+    throw lastError || new Error("All lookup services are unavailable");
+  }
+
+  function makeCard(user, exact) {
+    const card = document.createElement("article");
+    card.className = "result-card" + (exact ? " exact" : "");
+
+    const avatar = document.createElement("div");
+    avatar.className = "avatar";
+    avatar.textContent = String(user.name).slice(0, 2).toUpperCase();
+
+    const meta = document.createElement("div");
+    meta.className = "user-meta";
+    const name = document.createElement("div");
+    name.className = "username";
+    name.textContent = user.name;
+    const display = document.createElement("div");
+    display.className = "display";
+    display.textContent = user.displayName && user.displayName !== user.name
+      ? "Display name: " + user.displayName : "Username: " + user.name;
+    const id = document.createElement("div");
+    id.className = "user-id";
+    id.textContent = "User ID: " + user.id;
+    meta.append(name, display, id);
+
+    const actions = document.createElement("div");
+    actions.className = "card-actions";
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "icon-button";
+    copy.title = "Copy User ID";
+    copy.setAttribute("aria-label", "Copy user ID for " + user.name);
+    copy.append(svg("copy"));
+    copy.addEventListener("click", async () => {
+      const value = String(user.id);
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(value);
+        copied = true;
+      } catch {
+        const temp = document.createElement("textarea");
+        temp.value = value;
+        temp.style.position = "fixed";
+        temp.style.left = "-9999px";
+        document.body.appendChild(temp);
+        temp.select();
+        try { copied = document.execCommand("copy"); } catch {}
+        temp.remove();
+      }
+      if (copied) {
+        copy.replaceChildren(svg("check"));
+        copy.title = "Copied";
+        setStatus("Copied user ID " + value);
+        setTimeout(() => {
+          if (copy.isConnected) copy.replaceChildren(svg("copy"));
+        }, 1500);
+      } else {
+        setStatus("Clipboard access is unavailable. Select the ID above to copy it.", true);
+      }
+    });
+    const profile = document.createElement("a");
+    profile.className = "icon-button";
+    profile.href = "https://www.roblox.com/users/" + encodeURIComponent(user.id) + "/profile";
+    profile.target = "_blank";
+    profile.rel = "noopener noreferrer";
+    profile.title = "Open Roblox profile";
+    profile.setAttribute("aria-label", "Open profile for " + user.name);
+    profile.append(svg("external"));
+    actions.append(copy, profile);
+    card.append(avatar, meta, actions);
+    return card;
+  }
+
+  function heading(label) {
+    const heading = document.createElement("div");
+    heading.className = "suggestion-head";
+    heading.textContent = label;
+    return heading;
+  }
+
+  function displayResults(found, query) {
+    const accounts = found.filter(user =>
+      user && typeof user.name === "string" &&
+      (typeof user.id === "number" || /^\d+$/.test(String(user.id)))
+    );
+    const exact = accounts.find(user => user.name.toLowerCase() === query.toLowerCase());
+    const others = accounts.filter(user => !exact || String(user.id) !== String(exact.id)).slice(0, 9);
+    results.replaceChildren();
+    results.hidden = false;
+    empty.hidden = true;
+    resultHeading.textContent = exact ? "Matching account" : "Search results";
+
+    if (exact) {
+      const label = document.createElement("div");
+      label.className = "exact-label";
+      label.textContent = "Exact username match";
+      results.append(label, makeCard(exact, true));
+      if (others.length) results.append(heading("Other accounts"));
+      setStatus("Found " + exact.name + ". Copy the User ID using the button.");
+    } else if (others.length) {
+      results.append(heading("No exact username match. Similar accounts:"));
+      setStatus("No exact match for \"" + query + "\". Check the accounts below.");
+    } else {
+      results.hidden = true;
+      empty.hidden = false;
+      empty.replaceChildren(svg("user"), document.createTextNode("No accounts found. Double-check the username."));
+      setStatus("No accounts found for \"" + query + "\".");
+    }
+    for (const user of others) results.append(makeCard(user, false));
+  }
+
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    const query = input.value.trim().replace(/^@/, "");
+    if (!/^[A-Za-z0-9_]{3,20}$/.test(query)) {
+      setStatus("Enter a Roblox username with 3–20 letters, numbers, or underscores.", true);
+      return;
+    }
+    if (controller) controller.abort();
+    controller = new AbortController();
+    const run = ++latestRequest;
+    const signal = controller.signal;
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    submit.disabled = true;
+    results.hidden = true;
+    empty.hidden = true;
+    setStatus("Searching Roblox accounts…");
+    try {
+      const accounts = await lookup(query, signal);
+      if (run !== latestRequest) return;
+      displayResults(accounts, query);
+    } catch (error) {
+      if (run !== latestRequest) return;
+      empty.hidden = false;
+      empty.replaceChildren(svg("user"), document.createTextNode("Could not fetch Roblox accounts right now."));
+      const detail = signal.aborted ? "Request timed out" : error.message;
+      setStatus(detail + ". The browser API proxies may be unavailable.", true);
+    } finally {
+      clearTimeout(timeout);
+      if (run === latestRequest) submit.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>
