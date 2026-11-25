@@ -248,9 +248,6 @@ let raw=value.replace(/\r\n?/g,"\n").trim();
 const fence=String.fromCharCode(96).repeat(3);
 let code=null;let language="luau";
 if(raw.startsWith(fence)){
-const m=raw.slice(3).match(/^([\w-]*)\n([\s\S]*?)\n?/);
-}
-if(raw.startsWith(fence)){
 const inner=raw.slice(3);const end=inner.lastIndexOf(fence);
 if(end>=0){const m=inner.slice(0,end).match(/^([\w-]*)\n([\s\S]*)$/);
 if(m){language=m[1]||"luau";code=m[2].replace(/\n$/,"")}}
@@ -373,7 +370,6 @@ actions.append(reply,copy);bubble.append(actions);
 return row;
 }
 function formatText(parent,body){
-const regex=//g;
 const re=new RegExp("("+String.fromCharCode(96)+"[^"+String.fromCharCode(96)+"\\n]{1,150}"+String.fromCharCode(96)+"|@[A-Za-z0-9_]+)","g");
 let start=0;for(const match of body.matchAll(re)){
 const idx=match.index||0;if(idx>start)parent.append(document.createTextNode(body.slice(start,idx)));
